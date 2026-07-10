@@ -25,10 +25,11 @@ function loadQuickJS() {
 }
 
 class VfxRuntime {
-  constructor(rt, context, frameFn, mode, meta) {
+  constructor(rt, context, frameFn, setInputFn, mode, meta) {
     this.rt = rt;
     this.context = context;
     this.frameFn = frameFn;
+    this.setInputFn = setInputFn;
     this.mode = mode;
     this.meta = meta;
     this.disposed = false;
@@ -69,8 +70,9 @@ class VfxRuntime {
       setupHandle.dispose();
 
       const frameFn = context.getProp(context.global, '__vfxFrame');
+      const setInputFn = context.getProp(context.global, '__vfxSetInput');
 
-      return new VfxRuntime(rt, context, frameFn, mode, meta);
+      return new VfxRuntime(rt, context, frameFn, setInputFn, mode, meta);
     } catch (err) {
       context.dispose();
       rt.dispose();
@@ -103,10 +105,27 @@ class VfxRuntime {
     return new Uint8Array(value); // defensive copy, decoupled from VM memory
   }
 
+  // Merges a patch into the sandbox's `input` object, one group at a time,
+  // e.g. `setInput({ audio: { level: 0.5 } })`. Used by the validation
+  // harness to synthesize input streams; the real-time daemon loop doesn't
+  // call this yet (real sampling lands in build phase 3).
+  setInput(patch) {
+    if (this.disposed) throw new Error('VfxRuntime already disposed');
+    const jsonHandle = this.context.newString(JSON.stringify(patch));
+    try {
+      this.context.unwrapResult(
+        this.context.callFunction(this.setInputFn, this.context.undefined, jsonHandle)
+      ).dispose();
+    } finally {
+      jsonHandle.dispose();
+    }
+  }
+
   dispose() {
     if (this.disposed) return;
     this.disposed = true;
     this.frameFn.dispose();
+    this.setInputFn.dispose();
     this.context.dispose();
     this.rt.dispose();
   }

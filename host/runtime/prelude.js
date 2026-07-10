@@ -278,6 +278,16 @@ let input = {
   env: { ok: false, tempC: 20, cloud: 0, rain: 0 },
 };
 
+// Host-callable: merges a JSON-encoded patch into `input`, one group at a
+// time (e.g. `{"audio":{"level":0.5}}`). Used by the validation harness's
+// synthesized-input pass and, eventually, real per-frame input sampling
+// (build phase 3) — neither the sandbox boundary rule nor real-time daemon
+// behavior changes, since the phase-1 daemon simply never calls this.
+function __vfxSetInput(json) {
+  const patch = JSON.parse(json);
+  for (const group in patch) Object.assign(input[group], patch[group]);
+}
+
 // --- frame dispatch ---------------------------------------------------------
 // Set by the host once after program load ('pixel' | 'buffer'). Kept out
 // of the per-frame hot path so mode isn't re-detected every call.

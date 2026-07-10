@@ -1,98 +1,125 @@
-# Handoff note — 2026-07-09
+# Handoff note — 2026-07-10
 
 Scratch note for picking this session back up. Not part of the permanent
 docs set (CLAUDE.md / VFX_API.md remain authoritative) — delete this file
 once its contents are stale.
 
-## Status: Build phase 1 complete and visually confirmed
+## Status: Build phase 2 complete
 
-Jim ran `npm run sim`, opened the browser page, and confirmed it looks
-right — all three seed effects rendering live.
+Also worth noting: Jim confirmed the physical hardware path this session
+too — `rpi-led-matrix`'s demo program runs correctly on the Pi ("glowy")
+against the real 64×64 panel. That's independent of the phase 2 work
+below but de-risks phase 5 (Pi bring-up) whenever we get there.
 
 ## What's done
 
-- **`host/runtime/prelude.js`** — the full stdlib injected into the QuickJS
-  sandbox: `rgb`/`hsv`, vendored simplex `noise2`/`noise3` (permutation
-  table generated via a seeded mulberry32 shuffle, not a hand-copied
-  table — deliberate choice, see Decisions below), `clamp`/`lerp`/
-  `smoothstep`/`fract`, the framebuffer + `setPixel`/`getPixel`/`fill`/
-  `fade`, `sprite`/`blit`, the neutral `input` object, and the
-  `__vfxFrame` mode-dispatch wrapper (pixel-mode's per-pixel loop lives
-  in-sandbox, per the one-crossing-per-frame rule).
-- **`host/runtime/vfxRuntime.js`** — wraps `quickjs-emscripten`. One
-  QuickJSRuntime+context per loaded program, 16MB memory limit, interrupt
-  handler as a crash guard against runaway loops, `eval`/`Function`
-  deleted from sandbox globals. `renderFrame(t, dt)` is the single
-  per-frame crossing: one `callFunction`, buffer read back via
-  `getArrayBuffer` in that same call.
-- **`host/display/`** — `Display` base class; `SimDisplay` (http + ws
-  server, serves `simpage/` static files, broadcasts raw RGB frames as
-  binary WS messages); `MatrixDisplay` (lazy-`require`s `rpi-led-matrix`,
-  best-effort skeleton, **not exercised on real hardware** — full bring-up
-  is phase 5); `index.js` picks backend by `kind` ('sim' | 'matrix').
-- **`host/display/simpage/`** — `index.html` + `client.js`, canvas draws
-  64×64 frames as chunky LED-style squares (10px pitch, 2px gap),
-  reconnects on drop.
-- **`host/daemon.js`** — CLI: `node host/daemon.js <effect.js>` (single,
-  runs until Ctrl+C) or `node host/daemon.js --playlist <file.json>
-  [--port N]` (loops forever). Playlist JSON: array of `{ file,
-  duration? }`, duration in seconds, default 20. Hard-cut swap between
-  programs (no crossfade — deferred, see Decisions).
-- **`effects/playlist.json`** — demo playlist covering all three seed
-  effects.
-- Verified: smoke-tested `VfxRuntime` against all three seed effects
-  (pixel mode / buffer+fade / buffer+sprites), confirmed changing output
-  over 90 frames each; raw WebSocket client confirmed binary frame stream
-  with plausible non-zero pixel counts; daemon log confirmed playlist
-  cycling through all three; single-file CLI mode confirmed serving.
-  Then Jim eyeballed it in a real browser — first visual confirmation.
-- `README.md` updated with run instructions; `.gitignore` added
-  (`node_modules/`).
+- **`host/runtime/prelude.js` / `host/runtime/vfxRuntime.js`** — added
+  `__vfxSetInput(json)` (prelude) and `VfxRuntime.prototype.setInput(obj)`
+  (host wrapper), same JSON-crossing pattern already used for `meta`. Lets
+  the host push values into the sandboxed `input` object; the real-time
+  daemon loop doesn't call it yet (still phase 3), but the validation
+  harness now does, and phase 3's real sampling will use the same hook.
+- **`validate/`** — the headless validation harness, all per plan
+  (`C:\Users\Jim\.claude\plans\glistening-sparking-fiddle.md` has the full
+  design writeup if useful context resurfaces):
+  - `inputScenarios.js` — neutral input object + synthesized per-frame
+    generators for audio/button/clock/env (sine-wave audio with beat
+    pulses, a button press/hold/release schedule, an hour-of-day sweep
+    with a synthetic daylight curve, slow env ramps).
+  - `metrics.js` — temporal variance, mean brightness, spatial contrast
+    (per-frame std dev — deliberately NOT histogram entropy, see Decisions
+    below), plus frame-timing evaluation. All thresholds are named
+    constants, calibrated against the three seed pieces (see Decisions).
+  - `frontmatter.js` — extracts `/*@vfx ... @vfx*/`, parses via `js-yaml`,
+    validates `id`/`title`/`rationale` presence, UUID shape, lineage
+    entries (id resolves in `index.json`, relation is one of
+    variation/inspiration/contrast).
+  - `preview.js` — samples frames, nearest-neighbor 4× upscale, encodes
+    via `gifenc`, writes beside the source file.
+  - `index.js` — orchestrates both passes (neutral + synthesized, only if
+    `meta.inputs` is non-empty), runs all checks, exports
+    `validateProgram()` for programmatic use (phase 4's agent loop will
+    call this to decide deploy vs. retry) and a CLI: `node
+    validate/index.js <file.js>` or `--all` (iterates `index.json`).
+- **`package.json`** — added `js-yaml`, `gifenc`; added `"validate": "node
+  validate/index.js"` script.
+- Verified: all three seed effects pass `--all` (frontmatter, no
+  exceptions, liveliness, frame budget, no exceptions with synthesized
+  inputs) and produce sane-looking preview GIFs (`effects/*.gif`, now
+  tracked). Hand-wrote and confirmed-then-deleted five scratch programs to
+  prove each failure mode fires correctly: mid-frame throw, malformed
+  frontmatter YAML, frozen/black/flat output, unresolved lineage id +
+  invalid lineage relation. Separately confirmed (via a throwaway script,
+  also deleted) that the synthesized input pass actually drives changing
+  output frame to frame, not just "didn't throw."
+- `README.md` updated with a "Validating an effect program" section.
 
 ## Decisions made this session (for consistency going forward)
 
-- **Plain JavaScript**, not TypeScript, for all host code — no build
-  step, runs identically on Windows/Pi. (User's explicit choice.)
-- **CLI has two modes**: single-file arg, or `--playlist` pointing at a
-  JSON file of `{file, duration}` entries (default duration 20s),
-  looping forever. (User's explicit spec.)
-- **Crossfade-in and watchdog fallback deferred to phase 2** — they pair
-  naturally with the validation harness, which is what defines
-  "known-good" for the fallback to swap to. Phase 1 daemon does a hard
-  cut between programs and just logs+skips a program that throws on
-  load or mid-frame.
-- Simplex noise permutation table is generated at prelude-load time from
-  a fixed seed (mulberry32 PRNG shuffle) rather than transcribed from a
-  canonical Perlin table by hand — avoids transcription-error risk,
-  still fully deterministic run-to-run.
-- `rpi-led-matrix` has NOT been `npm install`ed yet — MatrixDisplay's
-  `require` is untested. CLAUDE.md says it should stay a normal
-  dependency (its own install script warns/no-ops on non-Pi), but nobody
-  has confirmed that on this machine. Worth checking before phase 5.
+- **Spatial "liveliness" metric is per-frame pixel-value standard
+  deviation, not brightness-histogram entropy.** First implementation
+  used entropy and it failed all three seed pieces — CLAUDE.md's own
+  aesthetic guidance ("dark backgrounds + bright accents, moderate
+  average brightness") systematically skews a brightness histogram
+  toward one bin even for a genuinely lively piece (koi_pond: 4% mean
+  brightness but std ~21, because the koi are much brighter than the
+  pond). Std deviation rewards spatial contrast regardless of how dark
+  the overall image is, which is what "flat" actually means here.
+- **Liveliness thresholds are calibrated against the three seed pieces**,
+  not derived analytically — `FROZEN_TEMPORAL_VARIANCE` and
+  `BLACK_MEAN_BRIGHTNESS` in particular started too strict and rejected
+  fireflies (deliberately sparse/dim, one of the three documented seed
+  aesthetics) and plasma_bloom (slowly-evolving fields, which the spec
+  explicitly allows — "motion visible within 2s" doesn't mean large
+  frame-to-frame deltas). Current constants have comfortable margin below
+  all three observed values while still catching the genuinely-degenerate
+  case (exactly 0 for a program that renders nothing). Worth re-checking
+  once real agent-written pieces start flowing through.
+- **Frame-budget overruns are a soft warning, not a hard fail**, except
+  when grossly over (mean > 4× the 20ms budget, matching the interrupt
+  handler's own crash-guard multiple in `vfxRuntime.js`). Dev-machine
+  (Windows) timing doesn't represent the Pi's, so strict enforcement here
+  would be flaky/meaningless — real budget enforcement matters most on
+  the Pi and isn't this harness's job to gate hard on.
+- **Synthesized-input pass uses a fresh sandbox**, not the same instance
+  the neutral pass ran in — keeps the two scenarios independent (no
+  particle-state/elapsed-time carryover from the neutral run bleeding
+  into the "does it react correctly" check).
+- **GIF previews are written whenever the neutral pass produces at least
+  2 frames**, even if other checks fail — seeing what a rejected piece
+  actually looked like is useful for debugging now and for the agent's
+  own retry loop later (phase 4).
+- Preview GIFs upscale 64×64 → 256×256 (nearest-neighbor, 4×) — a native
+  64×64 GIF is hard to read in a file browser or in the creativity
+  agent's vision context when it studies its own archive.
 
 ## What's left (per CLAUDE.md build phases)
 
-- **Phase 2 (next up)**: validation harness — run ~300 frames headless,
-  check no exceptions/overruns, liveliness metrics (temporal variance,
-  mean brightness, spatial entropy), exercise declared `meta.inputs`
-  with synthesized streams (recorded audio, scripted button presses,
-  time-warped clock) AND a neutral-input sweep, verify frontmatter
-  parses (needs `js-yaml`, not yet installed) with UUID present and
-  lineage refs resolving against `index.json`, render a preview GIF
-  (needs `gifenc`, not yet installed).
-- **Phase 3**: real input sampling (audio via `arecord`+`fft.js` on Pi,
-  clock via `suncalc`, button, weather fetch). Right now `input` is a
-  static neutral object the host never mutates.
+- **Phase 3 (next up)**: real input sampling — audio via `arecord` +
+  `fft.js` on the Pi (sim-page fake on Windows), clock via `suncalc`,
+  button, weather fetch (`env`, `ok:false` on failure). The daemon needs
+  to start calling the now-existing `runtime.setInput()` per frame with
+  real sampled values; currently only the validation harness calls it.
+- Also still owed from phase 1, deferred deliberately: crossfade-in
+  between programs and watchdog fallback-to-known-good on the daemon
+  side. These pair naturally with phase 2's harness output (a piece that
+  passed validation is a "known-good" candidate) — worth doing either
+  right before or alongside phase 3's daemon changes, since both touch
+  `host/daemon.js`.
 - **Phase 4**: creativity agent session (`@anthropic-ai/sdk`), library/
-  index management, `knowledge/` seed docs.
-- **Phase 5**: Pi bring-up — flesh out `MatrixDisplay` for real, systemd
-  units, wall-label display server.
+  index management, `knowledge/` seed docs. `validate/index.js`'s
+  exported `validateProgram()` is what the agent's retry loop will call.
+- **Phase 5**: Pi bring-up — flesh out `MatrixDisplay` for real (still
+  untested even though `rpi-led-matrix`'s own demo now runs fine on
+  glowy — the bonnet/panel path is confirmed, but `MatrixDisplay.js`
+  itself has never been exercised), systemd units, wall-label display
+  server.
 
 ## Blockers
 
-None currently — everything built this session runs and was visually
-confirmed. The one open loose end is the untested `rpi-led-matrix`
-install (see Decisions above), which only matters once phase 5 starts.
+None. Everything built this session runs and was verified (seed effects
+pass, all five deliberately-broken scratch cases fail with correct
+reasons, synthesized input pass confirmed to actually change output).
 
 ## Uncommitted work
 
@@ -100,14 +127,18 @@ Nothing from this session has been committed yet. `git status --short`
 as of writing:
 
 ```
- M README.md
-?? .gitignore
-?? effects/playlist.json
-?? host/
-?? package-lock.json
-?? package.json
+ M host/runtime/prelude.js
+ M host/runtime/vfxRuntime.js
+ M package-lock.json
+ M package.json
+?? effects/fireflies.gif
+?? effects/koi_pond.gif
+?? effects/plasma_bloom.gif
+?? validate/
 ```
 
-`node_modules/` is untracked but now gitignored, so it won't show up in
-`git add -A`. Jim hasn't asked for a commit yet — check with him before
-creating one.
+The three `effects/*.gif` files are generated previews, left tracked
+(not gitignored) — they travel with the piece the same way the code does,
+and the creativity agent is meant to review its own past work visually
+(CLAUDE.md: "the agent should SEE its past work"). Jim hasn't asked for a
+commit yet — check with him before creating one.

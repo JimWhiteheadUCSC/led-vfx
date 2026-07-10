@@ -8,7 +8,8 @@
   },
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1",
-    "sim": "node host/daemon.js --playlist effects/playlist.json"
+    "sim": "node host/daemon.js --playlist effects/playlist.json",
+    "validate": "node validate/index.js"
   },
   "repository": {
     "type": "git",
@@ -23,6 +24,8 @@
   },
   "homepage": "https://github.com/JimWhiteheadUCSC/led-vfx#readme",
   "dependencies": {
+    "gifenc": "^1.0.3",
+    "js-yaml": "^5.2.1",
     "quickjs-emscripten": "^0.32.0",
     "ws": "^8.21.0"
   }
