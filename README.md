@@ -9,10 +9,11 @@ its own archive and writes the next piece.
 - `host/` — render daemon, QuickJS runtime bridge, display backends
 - `CLAUDE.md` — project context for Claude Code sessions
 
-Status: build phases 1-2 done — QuickJS sandbox runtime + SimDisplay
-running all three seed effects in a browser, plus a headless validation
-harness (frontmatter/lineage checks, liveliness metrics, GIF previews).
-See CLAUDE.md for the phase plan.
+Status: build phases 1-3 done — QuickJS sandbox runtime + SimDisplay,
+a headless validation harness (frontmatter/lineage checks, liveliness
+metrics, GIF previews), and real input sampling (audio, clock, button,
+weather) feeding the sandbox every frame. See CLAUDE.md for the phase
+plan.
 
 ## Running the sim
 
@@ -22,7 +23,23 @@ npm run sim                        # loops effects/playlist.json
 node host/daemon.js effects/koi_pond.js   # or run a single effect
 ```
 
-Then open http://localhost:8080 in a browser.
+Then open http://localhost:8080 in a browser. Hold the on-screen button
+to feed `input.button`; audio is a synthetic oscillator by default (real
+mic input is Pi-only — see below).
+
+### Input sampling flags
+
+```
+node host/daemon.js effects/tide_pool_lantern.js --lat 36.97 --lon -122.03 --audio synthetic
+```
+
+- `--lat` / `--lon` — install site coordinates, drive `input.clock`'s
+  daylight curve (via `suncalc`) and `input.env` weather (via
+  Open-Meteo). Default: Santa Cruz, CA.
+- `--audio` — `synthetic` (default; a fake oscillator, since dev
+  machines don't have a panel mic) or `arecord` (real mic input via
+  `arecord` + `fft.js`, Pi-only — degrades to `ok:false` gracefully if
+  `arecord` isn't available, e.g. on Windows).
 
 ## Validating an effect program
 

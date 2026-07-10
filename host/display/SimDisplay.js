@@ -28,6 +28,7 @@ class SimDisplay extends Display {
     this.server = null;
     this.wss = null;
     this.clients = new Set();
+    this.buttonHandler = null;
   }
 
   async init() {
@@ -39,6 +40,10 @@ class SimDisplay extends Display {
       ws.send(JSON.stringify({ type: 'hello', width: this.width, height: this.height }));
       ws.on('close', () => this.clients.delete(ws));
       ws.on('error', () => this.clients.delete(ws));
+      ws.on('message', (data, isBinary) => {
+        if (isBinary) return;
+        this._handleClientMessage(data);
+      });
     });
 
     await new Promise((resolve, reject) => {
@@ -47,6 +52,24 @@ class SimDisplay extends Display {
     });
 
     console.log(`[SimDisplay] serving http://localhost:${this.port}`);
+  }
+
+  _handleClientMessage(data) {
+    let msg;
+    try {
+      msg = JSON.parse(data.toString());
+    } catch {
+      return;
+    }
+    if (msg.type === 'button' && this.buttonHandler) {
+      this.buttonHandler(!!msg.down);
+    }
+  }
+
+  // See Display.onButtonEvent — the sim page's on-screen button sends
+  // {type:'button', down} over the same WebSocket used for frames.
+  onButtonEvent(handler) {
+    this.buttonHandler = handler;
   }
 
   _handleRequest(req, res) {

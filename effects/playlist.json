@@ -1,5 +1,6 @@
 [
   { "file": "plasma_bloom.js" },
   { "file": "fireflies.js" },
-  { "file": "koi_pond.js", "duration": 30 }
+  { "file": "koi_pond.js", "duration": 30 },
+  { "file": "tide_pool_lantern.js", "duration": 30 }
 ]

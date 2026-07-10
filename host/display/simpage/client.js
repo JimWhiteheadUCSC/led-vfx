@@ -5,9 +5,11 @@
   const canvas = document.getElementById('panel');
   const ctx = canvas.getContext('2d');
   const statusEl = document.getElementById('status');
+  const buttonEl = document.getElementById('button');
 
   let width = 64;
   let height = 64;
+  let ws = null;
 
   function resizeCanvas() {
     canvas.width = width * SCALE;
@@ -35,7 +37,7 @@
 
   function connect() {
     const proto = location.protocol === 'https:' ? 'wss' : 'ws';
-    const ws = new WebSocket(`${proto}://${location.host}`);
+    ws = new WebSocket(`${proto}://${location.host}`);
     ws.binaryType = 'arraybuffer';
 
     ws.onopen = () => {
@@ -60,6 +62,22 @@
       draw(new Uint8Array(ev.data));
     };
   }
+
+  function sendButton(down) {
+    buttonEl.classList.toggle('pressed', down);
+    if (ws && ws.readyState === ws.OPEN) {
+      ws.send(JSON.stringify({ type: 'button', down }));
+    }
+  }
+
+  buttonEl.addEventListener('pointerdown', (ev) => {
+    ev.preventDefault();
+    buttonEl.setPointerCapture(ev.pointerId);
+    sendButton(true);
+  });
+  buttonEl.addEventListener('pointerup', () => sendButton(false));
+  buttonEl.addEventListener('pointercancel', () => sendButton(false));
+  buttonEl.addEventListener('pointerleave', () => sendButton(false));
 
   connect();
 })();
