@@ -1,0 +1,29 @@
+{
+  "name": "led-vfx",
+  "version": "1.0.0",
+  "description": "An autonomous LED artist: a Raspberry Pi 4 + 64x64 HUB75 matrix running generative art 24/7, with an hourly LLM \"creativity process\" that studies its own archive and writes the next piece.",
+  "main": "index.js",
+  "directories": {
+    "doc": "docs"
+  },
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "sim": "node host/daemon.js --playlist effects/playlist.json"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/JimWhiteheadUCSC/led-vfx.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "bugs": {
+    "url": "https://github.com/JimWhiteheadUCSC/led-vfx/issues"
+  },
+  "homepage": "https://github.com/JimWhiteheadUCSC/led-vfx#readme",
+  "dependencies": {
+    "quickjs-emscripten": "^0.32.0",
+    "ws": "^8.21.0"
+  }
+}
