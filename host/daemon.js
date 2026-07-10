@@ -4,14 +4,17 @@
 // Render loop entry point (build phase 1: no crossfade/watchdog yet —
 // still a deliberate gap, see HANDOFF.md). Two CLI modes:
 //
-//   node host/daemon.js <effect.js> [--lat .. --lon .. --audio ..]
-//   node host/daemon.js --playlist <playlist.json> [--port 8080] [--lat ..] [--lon ..] [--audio ..]
+//   node host/daemon.js <effect.js> [--lat .. --lon .. --audio ..] [--display ..]
+//   node host/daemon.js --playlist <playlist.json> [--port 8080] [...same flags]
 //
 // Playlist JSON is an array of { file, duration? } (duration in seconds,
 // defaults to 20). The daemon loops the playlist forever. --lat/--lon
 // (default Santa Cruz, CA) drive clock daylight and weather sampling;
 // --audio picks the audio input source ('synthetic' default, or
-// 'arecord' for real mic input on the Pi) — see host/input/.
+// 'arecord' for real mic input on the Pi) — see host/input/. --display
+// picks the render target ('sim' default, or 'matrix' for the real panel
+// on a Pi — requires sudo; see host/display/MatrixDisplay.js);
+// --gpio-mapping/--gpio-slowdown/--brightness only matter for 'matrix'.
 
 const fs = require('fs');
 const path = require('path');
@@ -25,6 +28,11 @@ const DEFAULT_PORT = 8080;
 const DEFAULT_LAT = 36.97;
 const DEFAULT_LON = -122.03;
 const DEFAULT_AUDIO_SOURCE = 'synthetic';
+const DEFAULT_DISPLAY = 'sim';
+// See host/display/MatrixDisplay.js for why these particular defaults.
+const DEFAULT_GPIO_MAPPING = 'adafruit-hat';
+const DEFAULT_GPIO_SLOWDOWN = 2;
+const DEFAULT_BRIGHTNESS = 100;
 
 function parseArgs(argv) {
   const args = argv.slice(2);
@@ -32,6 +40,10 @@ function parseArgs(argv) {
   let lat = DEFAULT_LAT;
   let lon = DEFAULT_LON;
   let audioSource = DEFAULT_AUDIO_SOURCE;
+  let display = DEFAULT_DISPLAY;
+  let gpioMapping = DEFAULT_GPIO_MAPPING;
+  let gpioSlowdown = DEFAULT_GPIO_SLOWDOWN;
+  let brightness = DEFAULT_BRIGHTNESS;
 
   const portIdx = args.indexOf('--port');
   if (portIdx !== -1) {
@@ -63,18 +75,49 @@ function parseArgs(argv) {
     args.splice(audioIdx, 2);
   }
 
+  const displayIdx = args.indexOf('--display');
+  if (displayIdx !== -1) {
+    display = args[displayIdx + 1];
+    if (display !== 'sim' && display !== 'matrix') {
+      throw new Error("--display must be 'sim' or 'matrix'");
+    }
+    args.splice(displayIdx, 2);
+  }
+
+  const gpioMappingIdx = args.indexOf('--gpio-mapping');
+  if (gpioMappingIdx !== -1) {
+    gpioMapping = args[gpioMappingIdx + 1];
+    args.splice(gpioMappingIdx, 2);
+  }
+
+  const gpioSlowdownIdx = args.indexOf('--gpio-slowdown');
+  if (gpioSlowdownIdx !== -1) {
+    gpioSlowdown = Number(args[gpioSlowdownIdx + 1]);
+    if (!Number.isFinite(gpioSlowdown)) throw new Error('--gpio-slowdown requires a numeric argument');
+    args.splice(gpioSlowdownIdx, 2);
+  }
+
+  const brightnessIdx = args.indexOf('--brightness');
+  if (brightnessIdx !== -1) {
+    brightness = Number(args[brightnessIdx + 1]);
+    if (!Number.isFinite(brightness)) throw new Error('--brightness requires a numeric argument');
+    args.splice(brightnessIdx, 2);
+  }
+
   if (args[0] === '--playlist') {
     if (!args[1]) throw new Error('Usage: daemon.js --playlist <playlist.json>');
-    return { mode: 'playlist', playlistPath: args[1], port, lat, lon, audioSource };
+    return { mode: 'playlist', playlistPath: args[1], port, lat, lon, audioSource, display, gpioMapping, gpioSlowdown, brightness };
   }
   if (args[0] && !args[0].startsWith('--')) {
-    return { mode: 'single', file: args[0], port, lat, lon, audioSource };
+    return { mode: 'single', file: args[0], port, lat, lon, audioSource, display, gpioMapping, gpioSlowdown, brightness };
   }
 
   throw new Error(
     'Usage:\n' +
       '  node host/daemon.js <effect.js> [--lat 36.97 --lon -122.03 --audio synthetic]\n' +
-      '  node host/daemon.js --playlist <playlist.json> [--port 8080] [--lat ..] [--lon ..] [--audio ..]'
+      '                      [--display sim|matrix] [--gpio-mapping adafruit-hat]\n' +
+      '                      [--gpio-slowdown 2] [--brightness 100]\n' +
+      '  node host/daemon.js --playlist <playlist.json> [--port 8080] [...same flags]'
   );
 }
 
@@ -149,7 +192,15 @@ async function main() {
       ? loadPlaylist(config.playlistPath)
       : [{ file: path.resolve(config.file), durationSeconds: Infinity }];
 
-  const display = createDisplay({ kind: 'sim', width: 64, height: 64, port: config.port });
+  const display = createDisplay({
+    kind: config.display,
+    width: 64,
+    height: 64,
+    port: config.port,
+    gpioMapping: config.gpioMapping,
+    gpioSlowdown: config.gpioSlowdown,
+    brightness: config.brightness,
+  });
   await display.init();
 
   const sampler = createInputSampler({ lat: config.lat, lon: config.lon, audioSource: config.audioSource });

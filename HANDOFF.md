@@ -4,123 +4,121 @@ Scratch note for picking this session back up. Not part of the permanent
 docs set (CLAUDE.md / VFX_API.md remain authoritative) — delete this file
 once its contents are stale.
 
-## Status: Build phase 3 complete
+## Status: Build phase 5 (partial) — MatrixDisplay real hardware support
+
+Scoped narrowly per Jim's call: MatrixDisplay + CLI wiring only. No
+systemd unit, no wall-label HDMI screen yet — those are follow-ups once
+he's seen this running reliably by hand.
+
+**This phase ends with Jim, not me** — I have no access to glowy (his
+Pi), so everything below is implemented and verified as far as I can on
+Windows (syntax, regression tests, graceful-failure paths), but the
+actual "does the panel render correctly" check can only happen when Jim
+runs it there and reports back.
 
 ## What's done
 
-- **`host/input/`** — real input sampling, composed rather than a single
-  polymorphic backend (see `C:\Users\Jim\.claude\plans\glistening-sparking-fiddle.md`
-  for the full design writeup):
-  - `clock.js` — real hour/minute/weekday(Monday=0)/dayOfYear from `Date`;
-    `daylight` from `suncalc`'s solar altitude (this suncalc build
-    returns **degrees**, not radians — tripped me up initially),
-    smoothstepped across a -6°..10° twilight band into 0..1.
-  - `env.js` — `EnvSampler` polls Open-Meteo (free, no key) every 15 min,
-    caches the result, `ok:false` + neutral defaults on any fetch
-    failure. Verified both the happy path and failure path directly.
-  - `audioSynthetic.js` — wall-clock-driven fake level/bass/mid/treble
-    with periodic beat pulses. This is the daemon's default audio source
-    (no real mic on a Windows dev machine).
-  - `audioArecord.js` — real Pi audio: spawns `arecord`, band-splits via
-    `fft.js` (bass/mid/treble by frequency range), RMS level, simple
-    rolling-average beat detection. Best-effort skeleton, same spirit as
-    phase 1's `MatrixDisplay` — untested against real hardware (no Pi +
-    USB mic yet). Confirmed it fails closed (`ok:false`, no crash) when
-    `arecord` is missing, both standalone and through the daemon's
-    `--audio arecord` flag on Windows.
-  - `button.js` — edge-detecting state tracker fed by async
-    press/release events (decoupled from the frame loop so nothing gets
-    missed or double-counted).
-  - `index.js` — `createInputSampler({lat,lon,audioSource})` composes
-    the above into one `sample(dt)` call per frame.
-- **`host/display/Display.js`** — added `onButtonEvent(handler)`, a
-  no-op by default. `MatrixDisplay` doesn't override it, so
-  `input.button` stays neutral on real hardware until there's an actual
-  button device (there isn't one yet — GPIO is occupied by the HUB75
-  bonnet, per CLAUDE.md's Pi deploy notes).
-- **`host/display/SimDisplay.js`** — now also *receives* WS messages
-  (previously send-only): `{type:'button', down}` from the browser.
-- **`host/display/simpage/`** — added a press-and-hold button element
-  (pointerdown/up/cancel/leave → WS message), no new connection.
-- **`host/daemon.js`** — constructs one `InputSampler` before the
-  playlist loop (input state is host-global, survives program swaps
-  unlike the per-program `VfxRuntime`), calls `runtime.setInput(sampler
-  .sample(dt))` every frame before `renderFrame`. New CLI flags:
-  `--lat`/`--lon` (default Santa Cruz, CA) and `--audio
-  <synthetic|arecord>` (default `synthetic`).
-- **`effects/tide_pool_lantern.js`** (new seed piece, UUID
-  `3a997c07-9327-4c3e-8b5c-db10ca3fcd8d`) — the first seed piece to
-  declare `meta.inputs`. A center glow that breathes on its own
-  (graceful-degradation idiom: still alive in total silence), swells
-  with audio level, throws sparks on beat, and charges brighter while
-  the button is held, releasing as an expanding ring. Registered in
-  `index.json` and `effects/playlist.json`. Passes `npm run validate`.
-- Verified end-to-end over the real WebSocket protocol (not just unit
-  tests): booted the daemon, connected a raw WS client, simulated a
-  button press/hold/release exactly as the browser would, and watched
-  frame-mean brightness swing with synthetic audio *and* visibly ramp up
-  during the simulated hold and pulse on release — confirms
-  SimDisplay's new message handling, InputSampler composition, and the
-  daemon's per-frame `setInput` call are all wired correctly together,
-  not just individually correct in isolation.
-- `README.md` updated with the input-sampling flags and sim button.
+- **`package.json`**: `rpi-led-matrix` added as an **`optionalDependency`**,
+  not a plain one. Important discovery this session: CLAUDE.md assumed
+  "native compile is skipped with a warning on non-Pi machines" — that's
+  false for this package as published. It has no custom install script;
+  npm's default binding.gyp-triggered auto-build kicks in unconditionally
+  and hard-fails via node-gyp/MSBuild on Windows (verified: a plain
+  `npm install rpi-led-matrix` aborts the whole install with a real
+  error). Moving it to `optionalDependencies` is what actually produces
+  the graceful "skip on non-Pi" behavior CLAUDE.md wanted — verified with
+  a clean `rm -rf node_modules package-lock.json && npm install`: exit 0,
+  no warnings, package simply absent from `node_modules`. Worth
+  correcting the assumption in CLAUDE.md at some point (didn't do it this
+  session — see below).
+- **`host/display/MatrixDisplay.js`** — rewritten against the package's
+  *real* API (confirmed via its `dist/index.d.ts` and native source
+  `src/led-matrix.addon.cc`, installed locally with `--ignore-scripts` to
+  read the JS/TS surface without needing a working native build):
+  - `GpioMapping.AdafruitHat === 'adafruit-hat'` etc. — confirmed by
+    reading the compiled enum object directly in `dist/index.cjs` (static
+    analysis; couldn't execute `require()` on Windows since the whole
+    module throws atomically when the native addon is missing — even
+    pure-JS exports like the enum become unreachable, not just the
+    native bits. This actually simplified the design: one try/catch
+    around the whole `require()` call is correct and sufficient).
+  - Default `gpioMapping` is now the plain `adafruit-hat` (not the phase-1
+    skeleton's `AdafruitHatPwm`) — matches Jim's confirmed-working demo
+    command; the GPIO4→GPIO18 PWM jumper mod hasn't been done.
+  - **Found a real bulk-write API**: `matrix.drawBuffer(buffer, w, h)`
+    takes exactly our `Display.pushFrame` contract (`assert(len == w*h*3)`
+    in the native source — RGB, row-major, no conversion needed) as a
+    single N-API call. Replaced the phase-1 skeleton's per-pixel
+    `setPixel(x,y,r,g,b)` loop entirely — that signature doesn't even
+    exist in the real API (this version's `setPixel(x,y)` takes no color
+    args, painting with the currently-set `fgColor`). This resolves the
+    performance risk flagged in this session's plan before writing any
+    code.
+  - `gpioMapping`/`gpioSlowdown`/`brightness` are now constructor options
+    (and CLI flags, see below), not hardcoded.
+  - Clearer failure messaging: missing-module warning explains the
+    optionalDependency situation; an init failure specifically on Linux
+    suggests checking `sudo`.
+- **`host/daemon.js`** — new CLI flags: `--display <sim|matrix>` (default
+  `sim` — this didn't exist at all before, so there was previously no way
+  to select `MatrixDisplay` from the CLI regardless of platform),
+  `--gpio-mapping`, `--gpio-slowdown`, `--brightness` (matrix-only,
+  harmlessly ignored otherwise). Same indexOf+splice flag-parsing pattern
+  as `--lat`/`--lon`/`--audio`.
+- **`README.md`** — new "Running on real hardware" section: prerequisites,
+  git-clone-on-Pi flow (native addon must compile on ARM, so the repo has
+  to live and build on the Pi itself), the `sudo` requirement, and the
+  confirmed-working example command.
+- Verified on Windows: `npm install` succeeds cleanly with the optional
+  dependency; `npm run sim` and `npm run validate -- --all` both
+  unaffected; `--display matrix` fails with the expected clear warning +
+  clean error (not a crash); full flag-combination parsing and bad-value
+  error paths all behave correctly.
 
 ## Decisions made this session (for consistency going forward)
 
-- **No real button hardware yet** (GPIO occupied by the HUB75 bonnet,
-  per CLAUDE.md's Pi deploy notes) — confirmed with Jim rather than
-  guessed. Built fully in the sim; real Pi leaves it neutral until a
-  device is chosen.
-- **Sim audio is a synthetic oscillator, not real browser mic capture**
-  — confirmed with Jim. Simpler, no new WS binary audio path, good
-  enough to develop/test audio-reactive effects against.
-- **Weather is Open-Meteo** (free, no API key) — confirmed with Jim.
-- **Default location is Santa Cruz, CA (36.97, -122.03)**, override via
-  `--lat`/`--lon` — confirmed with Jim (matches UCSC).
-- **This suncalc build (`^2.0.0`) returns solar altitude in degrees, not
-  radians** — worth remembering if touching `clock.js` later; the
-  classic suncalc docs (and a lot of Stack Overflow) assume radians.
-- **Scoped to input sampling only.** The phase-1-deferred crossfade-in
-  and watchdog-fallback daemon features stay a separate follow-up, per
-  Jim's explicit call, even though both touch `host/daemon.js`.
-- **Caught my own bug via the validation harness, not by eye**: the
-  first `tide_pool_lantern.js` draft applied the `v*v` perceptual curve
-  twice (once via a squared spatial falloff, again via `hsv()`'s value
-  arg), crushing the glow to near-invisibility, and separately had
-  almost no frame-to-frame variation in silence (only the glow radius's
-  edge pixels changed as it breathed, diluted across the full 64×64
-  buffer). `npm run validate` caught both as liveliness failures before
-  I ever looked at a GIF — fixed by applying the curve once (matching
-  `plasma_bloom.js`'s existing idiom) and adding real per-frame
-  brightness jitter (a "candlelight flicker," not just per-pixel noise
-  texture) so the idle state is genuinely alive at the pixel level, not
-  just to the eye.
+- **GPIO mapping default is `adafruit-hat`, not `adafruit-hat-pwm`** —
+  confirmed with Jim (PWM jumper mod not done). Change the default once
+  that mod happens, not before.
+- **Deploy method is git clone/pull directly on the Pi** — confirmed with
+  Jim. The native addon has to compile on ARM regardless of how the repo
+  gets there.
+- **Scoped to MatrixDisplay only this pass** — confirmed with Jim.
+  systemd (boot-start/auto-restart) and the wall-label HDMI screen are
+  explicitly deferred, not forgotten.
+- **`rpi-led-matrix` must be an `optionalDependency`, never a plain
+  one** — this is now load-bearing for `npm install` working on Windows
+  at all. If a future session touches `package.json`, don't "fix" this
+  back to a plain dependency without re-reading this note.
 
 ## What's left (per CLAUDE.md build phases)
 
+- **You (Jim) run it on glowy and report back**: confirm `node --version`
+  is 20+ ARM64, `git clone`/`pull`, `npm install` (first real test of the
+  native build actually compiling), then `sudo node host/daemon.js
+  effects/koi_pond.js --display matrix --gpio-mapping adafruit-hat
+  --gpio-slowdown 2`. Also worth trying `tide_pool_lantern.js` to sanity
+  check real input sampling alongside MatrixDisplay. Report back anything
+  unexpected — flicker, wrong colors, crashes, permission errors — so the
+  next session can fix it against real signal.
 - **Still deferred from phase 1**: crossfade-in between programs and
-  watchdog fallback-to-known-good on the daemon side. A piece that
-  passes `validate/index.js`'s `validateProgram()` is a "known-good"
-  candidate — this is the natural next thing to build, and it's the
-  last daemon-side gap before phase 4's agent loop can safely deploy
-  what it writes.
-- **Phase 4**: creativity agent session (`@anthropic-ai/sdk`), library/
-  index management, `knowledge/` seed docs (still doesn't exist —
-  craft notes, artist dossiers, agent's own lessons-learned).
-- **Phase 5**: Pi bring-up — flesh out `MatrixDisplay` for real (still
-  untested even though `rpi-led-matrix`'s own demo runs fine on glowy),
-  systemd units, wall-label display server, and — now relevant — the
-  first real test of `audioArecord.js` against an actual USB mic, plus
-  finally deciding on real button hardware.
+  watchdog fallback-to-known-good on the daemon side.
+- **Still deferred from this phase 5 pass**: systemd units (render daemon
+  boot-start/restart), wall-label HDMI screen.
+- **Phase 4**: creativity agent session, library/index management,
+  `knowledge/` seed docs — still not started.
+- Worth a small CLAUDE.md correction at some point: its Pi deploy notes
+  say `rpi-led-matrix`'s "native compile is skipped with a warning on
+  non-Pi machines" — that's not accurate for the package as published;
+  it's `optionalDependencies` doing the graceful-skip work, not the
+  package itself. Didn't touch CLAUDE.md this session (out of scope for
+  a hands-on implementation pass), but flagging it so it doesn't mislead
+  a future session reading it as ground truth.
 
 ## Blockers
 
-None. Everything built this session runs and was verified: all four
-seed effects pass `npm run validate -- --all`, the arecord audio path
-fails closed on Windows (both standalone and through the daemon),
-weather sampling degrades gracefully on fetch failure, and the full
-button/audio/clock chain was confirmed live over a real WebSocket
-connection.
+None on my end, but real verification is blocked on Jim running the
+above on glowy — see "What's left."
 
 ## Uncommitted work
 
@@ -128,24 +126,11 @@ Nothing from this session has been committed yet. `git status --short`
 as of writing:
 
 ```
- M effects/fireflies.gif
- M effects/koi_pond.gif
- M effects/playlist.json
+ M README.md
  M host/daemon.js
- M host/display/Display.js
- M host/display/SimDisplay.js
- M host/display/simpage/client.js
- M host/display/simpage/index.html
- M index.json
+ M host/display/MatrixDisplay.js
  M package-lock.json
  M package.json
-?? effects/tide_pool_lantern.gif
-?? effects/tide_pool_lantern.js
-?? host/input/
 ```
 
-`fireflies.gif`/`koi_pond.gif` show as modified only because both
-effects use `Math.random()` internally, so re-running `npm run validate`
-during this session's testing regenerated slightly different (equally
-valid) previews — not a functional change. Jim hasn't asked for a commit
-yet — check with him before creating one.
+Jim hasn't asked for a commit yet — check with him before creating one.

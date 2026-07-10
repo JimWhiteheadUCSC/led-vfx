@@ -30,5 +30,8 @@
     "quickjs-emscripten": "^0.32.0",
     "suncalc": "^2.0.0",
     "ws": "^8.21.0"
+  },
+  "optionalDependencies": {
+    "rpi-led-matrix": "^1.15.0"
   }
 }
