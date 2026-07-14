@@ -213,6 +213,57 @@ intentionally absent — implement them in program code:
 - No `import`, `require`, `eval`, `Function` constructor, or async.
   Runaway loops are interrupted and count as a crash.
 
+## Pixel-mode performance on real hardware
+
+Pixel mode calls `pixel(x, y, t)` once per pixel per frame — 4096 times
+at 64×64. On a Pi 4, QuickJS running as WASM makes that loop itself
+expensive: profiling on real hardware showed 4096 calls to a `pixel()`
+that just returns a constant already costs ~8ms of the 20ms budget,
+before any effect math runs. Past that floor, **cost tracks per-pixel
+operation and function-call count, not raw arithmetic complexity** — a
+chain of small helper calls (`hsv()` internally calling `fract()`,
+`clamp()`, `rgb()`) cost about as much measured time as `noise2()`'s much
+heavier branchy gradient-lookup body, because the interpreter pays
+per-operation/per-call dispatch cost either way, not per FLOP. (Native
+code cannot shortcut this: the whole stdlib deliberately lives inside the
+sandbox as pure JS — see the one-sandbox-crossing-per-frame rule — so
+"call out to C for the expensive part" isn't an available lever, and
+would replace one cheap crossing with thousands of expensive ones.)
+
+If a pixel-mode piece is provably over budget, three idioms cut per-pixel
+*call count* (the actual lever) without visibly changing the output —
+`effects/plasma_bloom.js` applies all three and dropped from ~95ms/frame
+to ~43ms/frame on a Pi 4 (measured, not simulated), with liveliness
+metrics essentially unchanged; read it for the worked example:
+
+- **Hoist subexpressions that don't depend on both axes.** A term that
+  only depends on `x` (or only on `t`) is being recomputed HEIGHT times
+  more than necessary in the naive per-pixel form. Cache it in a
+  top-level typed array, rebuilt once per frame — top-level state
+  persists (see Lifecycle), so a `let __cacheT` guard that rebuilds the
+  cache whenever `t` changes since the last call is enough; call order
+  within a frame doesn't matter since every call that frame shares the
+  same `t`.
+- **Replace a continuous value-to-color mapping with a small palette.**
+  If a pixel's final color is a deterministic function of one bounded
+  scalar (e.g. a wave/noise sum squashed to roughly -1..1), build an
+  N-entry color table once per frame (N=256 is already finer than 8-bit
+  channel resolution) instead of calling `hsv()`/`smoothstep()` per
+  pixel, and index into it with the quantized value per pixel instead.
+- **Upsample expensive fields instead of resampling them.** `noise2()` is
+  the single most expensive primitive measured. If its inputs vary
+  slowly across the panel, sample it on a small grid once per frame and
+  bilinearly interpolate per pixel (classic value-noise upsampling) — a
+  17×17 grid (289 samples) in place of 4096 full evaluations is visually
+  indistinguishable at this resolution/noise frequency and roughly 14x
+  cheaper.
+
+These are worth the added complexity only once a piece is measured over
+budget — buffer-mode pieces and simple pixel-mode pieces (a handful of
+sin/cos, no noise, no deep helper chains) are usually fine without any of
+this, and reaching for it by default would just make future pieces
+harder to read for no measured benefit.
+
 ## Aesthetic guidance for a 64×64 LED matrix
 
 - Detail below ~3 px reads as noise at viewing distance; favor bold

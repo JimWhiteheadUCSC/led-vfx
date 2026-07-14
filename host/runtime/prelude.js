@@ -19,7 +19,9 @@ function lerp(a, b, u) {
 }
 
 function smoothstep(lo, hi, v) {
-  const x = clamp((v - lo) / (hi - lo), 0, 1);
+  // Inlined clamp (hot path: called per pixel in pixel-mode effects).
+  let x = (v - lo) / (hi - lo);
+  x = x < 0 ? 0 : x > 1 ? 1 : x;
   return x * x * (3 - 2 * x);
 }
 
@@ -33,11 +35,14 @@ function fract(v) {
 // than a hand-copied magic table, so every program sees the same noise
 // field on every run.
 
-const __grad3 = [
-  [1, 1, 0], [-1, 1, 0], [1, -1, 0], [-1, -1, 0],
-  [1, 0, 1], [-1, 0, 1], [1, 0, -1], [-1, 0, -1],
-  [0, 1, 1], [0, -1, 1], [0, 1, -1], [0, -1, -1],
-];
+// Flat (not array-of-arrays) so gradient lookups are one indexed read
+// instead of two nested ones - this is a hot path (once per noise sample,
+// 3-4x per noise2/noise3 call). Index as __grad3[gi * 3 + component].
+const __grad3 = new Int8Array([
+  1, 1, 0, -1, 1, 0, 1, -1, 0, -1, -1, 0,
+  1, 0, 1, -1, 0, 1, 1, 0, -1, -1, 0, -1,
+  0, 1, 1, 0, -1, 1, 0, 1, -1, 0, -1, -1,
+]);
 
 function __buildPermutation(seed) {
   let s = seed >>> 0;
@@ -89,11 +94,11 @@ function noise2(xin, yin) {
   const gi1 = __permMod12[ii + i1 + __perm[jj + j1]];
   const gi2 = __permMod12[ii + 1 + __perm[jj + 1]];
   let t0 = 0.5 - x0 * x0 - y0 * y0;
-  if (t0 < 0) n0 = 0; else { t0 *= t0; n0 = t0 * t0 * (__grad3[gi0][0] * x0 + __grad3[gi0][1] * y0); }
+  if (t0 < 0) n0 = 0; else { t0 *= t0; n0 = t0 * t0 * (__grad3[gi0 * 3] * x0 + __grad3[gi0 * 3 + 1] * y0); }
   let t1 = 0.5 - x1 * x1 - y1 * y1;
-  if (t1 < 0) n1 = 0; else { t1 *= t1; n1 = t1 * t1 * (__grad3[gi1][0] * x1 + __grad3[gi1][1] * y1); }
+  if (t1 < 0) n1 = 0; else { t1 *= t1; n1 = t1 * t1 * (__grad3[gi1 * 3] * x1 + __grad3[gi1 * 3 + 1] * y1); }
   let t2 = 0.5 - x2 * x2 - y2 * y2;
-  if (t2 < 0) n2 = 0; else { t2 *= t2; n2 = t2 * t2 * (__grad3[gi2][0] * x2 + __grad3[gi2][1] * y2); }
+  if (t2 < 0) n2 = 0; else { t2 *= t2; n2 = t2 * t2 * (__grad3[gi2 * 3] * x2 + __grad3[gi2 * 3 + 1] * y2); }
   return 70 * (n0 + n1 + n2);
 }
 
@@ -128,26 +133,32 @@ function noise3(xin, yin, zin) {
   const gi2 = __permMod12[ii + i2 + __perm[jj + j2 + __perm[kk + k2]]];
   const gi3 = __permMod12[ii + 1 + __perm[jj + 1 + __perm[kk + 1]]];
   let t0 = 0.6 - x0 * x0 - y0 * y0 - z0 * z0;
-  if (t0 < 0) n0 = 0; else { t0 *= t0; n0 = t0 * t0 * (__grad3[gi0][0] * x0 + __grad3[gi0][1] * y0 + __grad3[gi0][2] * z0); }
+  if (t0 < 0) n0 = 0; else { t0 *= t0; n0 = t0 * t0 * (__grad3[gi0 * 3] * x0 + __grad3[gi0 * 3 + 1] * y0 + __grad3[gi0 * 3 + 2] * z0); }
   let t1 = 0.6 - x1 * x1 - y1 * y1 - z1 * z1;
-  if (t1 < 0) n1 = 0; else { t1 *= t1; n1 = t1 * t1 * (__grad3[gi1][0] * x1 + __grad3[gi1][1] * y1 + __grad3[gi1][2] * z1); }
+  if (t1 < 0) n1 = 0; else { t1 *= t1; n1 = t1 * t1 * (__grad3[gi1 * 3] * x1 + __grad3[gi1 * 3 + 1] * y1 + __grad3[gi1 * 3 + 2] * z1); }
   let t2 = 0.6 - x2 * x2 - y2 * y2 - z2 * z2;
-  if (t2 < 0) n2 = 0; else { t2 *= t2; n2 = t2 * t2 * (__grad3[gi2][0] * x2 + __grad3[gi2][1] * y2 + __grad3[gi2][2] * z2); }
+  if (t2 < 0) n2 = 0; else { t2 *= t2; n2 = t2 * t2 * (__grad3[gi2 * 3] * x2 + __grad3[gi2 * 3 + 1] * y2 + __grad3[gi2 * 3 + 2] * z2); }
   let t3 = 0.6 - x3 * x3 - y3 * y3 - z3 * z3;
-  if (t3 < 0) n3 = 0; else { t3 *= t3; n3 = t3 * t3 * (__grad3[gi3][0] * x3 + __grad3[gi3][1] * y3 + __grad3[gi3][2] * z3); }
+  if (t3 < 0) n3 = 0; else { t3 *= t3; n3 = t3 * t3 * (__grad3[gi3 * 3] * x3 + __grad3[gi3 * 3 + 1] * y3 + __grad3[gi3 * 3 + 2] * z3); }
   return 32 * (n0 + n1 + n2 + n3);
 }
 
 // --- colors ---------------------------------------------------------------
 
 function rgb(r, g, b) {
-  return ((clamp(r, 0, 255) | 0) << 16) | ((clamp(g, 0, 255) | 0) << 8) | (clamp(b, 0, 255) | 0);
+  // Inlined clamp (hot path: called per pixel in pixel-mode effects, and
+  // once more per call from inside hsv()).
+  r = r < 0 ? 0 : r > 255 ? 255 : r;
+  g = g < 0 ? 0 : g > 255 ? 255 : g;
+  b = b < 0 ? 0 : b > 255 ? 255 : b;
+  return ((r | 0) << 16) | ((g | 0) << 8) | (b | 0);
 }
 
 function hsv(h, s, v) {
-  h = fract(h) * 6;
-  s = clamp(s, 0, 1);
-  v = clamp(v, 0, 1);
+  // Inlined fract/clamp (hot path: called per pixel in pixel-mode effects).
+  h = (h - Math.floor(h)) * 6;
+  s = s < 0 ? 0 : s > 1 ? 1 : s;
+  v = v < 0 ? 0 : v > 1 ? 1 : v;
   const i = h | 0;
   const f = h - i;
   const p = v * (1 - s);
