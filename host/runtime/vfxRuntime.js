@@ -15,8 +15,15 @@ const PRELUDE_SOURCE = fs.readFileSync(path.join(__dirname, 'prelude.js'), 'utf8
 const MEMORY_LIMIT_BYTES = 16 * 1024 * 1024;
 // Generous multiple of the 20ms frame budget: this is a sandbox crash
 // guard against runaway loops, not the frame-budget enforcement itself
-// (that's the validation harness's job in build phase 2).
-const INTERRUPT_BUDGET_MS = 20 * 4;
+// (that's the validation harness's job in build phase 2). Widened from
+// 4x on real Pi 4 hardware: QuickJS-as-WASM is considerably slower there
+// than on a typical dev machine, and a pixel-mode effect computing all
+// 4096 pixels per frame (plasma_bloom.js) tripped the old 80ms guard on
+// a legitimately-just-slow frame, not a runaway loop — it killed the
+// entire program on the first frame that ran long. Still bounded (a
+// genuine infinite loop is caught well under a second), just no longer
+// tuned to dev-machine timing alone.
+const INTERRUPT_BUDGET_MS = 20 * 15;
 
 let quickjsModulePromise = null;
 function loadQuickJS() {
