@@ -33,5 +33,8 @@
   },
   "optionalDependencies": {
     "rpi-led-matrix": "^1.15.0"
+  },
+  "allowScripts": {
+    "rpi-led-matrix@1.15.0": true
   }
 }
