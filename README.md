@@ -79,6 +79,43 @@ Notes:
 - `--display sim` (the default) is unaffected by any of this — the sim
   path doesn't touch `rpi-led-matrix` at all.
 
+## Wall label
+
+A secondary small screen (HDMI on the Pi) can show the currently-running
+piece's title and rationale, straight from its `/*@vfx ... @vfx*/`
+frontmatter — like a museum wall label. It's a standalone process,
+independent of the render daemon: `host/daemon.js` writes the current
+piece's info to `run/current-piece.json` on every program switch, and
+the wall-label server (`host/wallLabel/server.js`) watches that file and
+pushes it to a browser page over WebSocket. Neither process can take the
+other down.
+
+```
+npm run wall-label                        # serves http://localhost:8081
+npm run sim                               # (in another terminal) drives it
+```
+
+Open `http://localhost:8081` in any browser to see it update live as the
+render daemon switches effects — no Pi or real display required to try
+this. The page is plain HTML/CSS (`clamp()`-based responsive text, no
+fixed resolution assumed) so it isn't tied to any particular screen size.
+
+On the Pi, point a kiosk browser at that URL instead of a regular tab.
+`host/wallLabel/autostart.sh` does this automatically via labwc (the
+desktop's Wayland compositor):
+
+```
+chmod +x host/wallLabel/autostart.sh
+ln -s "$(pwd)/host/wallLabel/autostart.sh" ~/.config/labwc/autostart
+```
+
+Then log out/in or reboot (labwc only reads `autostart` at session
+start, not on `--reconfigure`/SIGHUP). This starts the wall-label server
+and a Chromium kiosk window on the secondary HDMI output; it does *not*
+start the render daemon itself — that's still a manual `npm run sim` (or
+the real-hardware command above) until systemd units exist. Logs land in
+`~/.cache/wall-label-server.log` and `~/.cache/wall-label-chromium.log`.
+
 ## Validating an effect program
 
 ```

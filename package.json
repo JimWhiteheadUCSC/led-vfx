@@ -9,6 +9,7 @@
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1",
     "sim": "node host/daemon.js --playlist effects/playlist.json",
+    "wall-label": "node host/wallLabel/server.js",
     "validate": "node validate/index.js"
   },
   "repository": {

@@ -1,0 +1,63 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8" />
+<title>LED VFX — Wall Label</title>
+<style>
+  html, body {
+    margin: 0;
+    height: 100%;
+    background: #000;
+    color: #eee;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-family: sans-serif;
+  }
+  #card {
+    box-sizing: border-box;
+    width: 100%;
+    height: 100%;
+    padding: clamp(12px, 4vw, 48px);
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    gap: clamp(8px, 2vh, 24px);
+  }
+  #title {
+    font-size: clamp(20px, 6vw, 64px);
+    font-weight: 600;
+    line-height: 1.15;
+    color: #fff;
+  }
+  #rationale {
+    font-size: clamp(12px, 2.4vw, 28px);
+    line-height: 1.4;
+    color: #ccc;
+    white-space: pre-wrap; /* rationale is a YAML block literal - preserve its real newlines */
+    max-width: 60ch;
+  }
+  #meta {
+    font: clamp(10px, 1.6vw, 16px) monospace;
+    color: #777;
+  }
+  #status {
+    position: fixed;
+    top: 8px;
+    left: 8px;
+    font: 12px monospace;
+    color: #444;
+  }
+  body.waiting #title { color: #555; }
+</style>
+</head>
+<body class="waiting">
+<div id="status">connecting…</div>
+<div id="card">
+  <div id="title">—</div>
+  <div id="rationale"></div>
+  <div id="meta"></div>
+</div>
+<script src="client.js"></script>
+</body>
+</html>

@@ -21,6 +21,8 @@ const path = require('path');
 const { VfxRuntime } = require('./runtime/vfxRuntime');
 const { createDisplay } = require('./display');
 const { createInputSampler } = require('./input');
+const { parsePieceInfo } = require('./wallLabel/pieceInfo');
+const { writeCurrentPiece } = require('./wallLabel/currentPieceStore');
 
 const DEFAULT_DURATION_SECONDS = 20;
 const DEFAULT_PORT = 8080;
@@ -150,6 +152,16 @@ async function runProgram(item, display, sampler, isStopped) {
   } catch (err) {
     console.error(`[daemon] failed to load ${item.file}:`, err);
     return;
+  }
+
+  // Best-effort - a run-directory permissions/disk problem here must
+  // never take down the render loop, which is the whole point of
+  // handing this off to a separate wall-label process via a file
+  // instead of an in-process call. See host/wallLabel/currentPieceStore.js.
+  try {
+    writeCurrentPiece(parsePieceInfo(source, item.file));
+  } catch (err) {
+    console.error(`[daemon] failed to write wall-label state for ${item.file}:`, err);
   }
 
   console.log(`[daemon] running '${runtime.meta.name || item.file}' (${runtime.mode} mode)`);

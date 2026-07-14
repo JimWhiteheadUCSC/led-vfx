@@ -112,8 +112,8 @@ repo. Therefore:
 - `index.json` — UUID → path map for the archive
 - `knowledge/` — (to create) craft notes, artist dossiers (start with
   Jim Campbell, Vera Molnár, Kim Asendorf, demoscene), agent's lessons-learned and style manifesto
-- `host/` — (to create) render daemon, display backends, input
-  sampling, QuickJS runtime with the stdlib globals
+- `host/` — render daemon, display backends, input sampling, QuickJS
+  runtime with the stdlib globals, wall-label server (`host/wallLabel/`)
 - `validate/` — (to create) headless harness as described above
 - `agent/` — (to create) hourly creativity session script (Anthropic
   API)
