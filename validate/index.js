@@ -86,6 +86,10 @@ async function validateProgram(source, opts = {}) {
   const fps = clampFps(runtime.meta.fps);
   const dt = 1 / fps;
 
+  if (runtime.meta.quality === 'half' && runtime.mode !== 'pixel') {
+    warnings.push('meta.quality has no effect in buffer mode (pixel mode only); ignored');
+  }
+
   // Neutral pass: also the source of liveliness metrics, frame timing, and
   // the GIF preview.
   runtime.setInput(NEUTRAL_INPUT);

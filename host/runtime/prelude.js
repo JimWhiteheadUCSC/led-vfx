@@ -307,6 +307,20 @@ let __mode = null;
 function __vfxFrame(t, dt) {
   if (__mode === 'buffer') {
     render(t, dt);
+  } else if (typeof meta !== 'undefined' && meta.quality === 'half') {
+    // Sample on a 2x2 grid instead of per-pixel (~4x fewer pixel() calls)
+    // and paint each sample as a 2x2 block. Pixel() still receives true
+    // 0..63 coordinates, so the effect's own x/WIDTH-style normalization
+    // stays correct with zero awareness of quality mode.
+    for (let y = 0; y < HEIGHT; y += 2) {
+      for (let x = 0; x < WIDTH; x += 2) {
+        const c = pixel(x, y, t);
+        setPixel(x, y, c);
+        setPixel(x + 1, y, c);
+        setPixel(x, y + 1, c);
+        setPixel(x + 1, y + 1, c);
+      }
+    }
   } else {
     for (let y = 0; y < HEIGHT; y++) {
       for (let x = 0; x < WIDTH; x++) {

@@ -114,7 +114,7 @@ drawings as ancestor texts); the "Process" series and "Process
 Compendium"; Processing (with Ben Fry); "Form+Code" (with Chandler
 McWilliams); "10 PRINT CHR$(205.5+RND(1)); : GOTO 10" (co-authored).
 
-House note: a living artist, so wWork in this lineage may someday be shown to its inspiration; make it worthy of the letter.
+House note: a living artist, so work in this lineage may someday be shown to its inspiration; make it worthy of the letter.
 
 https://index.reas.com/ :: compendium of artworks
 https://reas.com/ultraconcentrated :: about the Ultraconcentrated series

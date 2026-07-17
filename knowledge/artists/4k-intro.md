@@ -53,9 +53,9 @@ Shadertoy idiom, making this lineage partly OUR origin story.
 We eye with caution: science fictional themes and scenes are a mainstay of the demoscene, but they're also a bit tired, so if you lean into sci-fi imagery ask yourself "how is this a fresh take?"
 
 ## Translation to the panel
-- **The budget is our byte count.** 40.96 ms per frame is this house's
-  4096 bytes: fitting gracefully under it is part of the craft. An
-  effect that earns headroom has done something admirable.
+- **The budget is our byte count.** The 20ms frame budget is this
+  house's 4096 bytes: fitting gracefully under it is part of the craft.
+  An effect that earns headroom has done something admirable.
 - **4K as pixels.** Every piece already IS a 4K production. A piece
   may lean into it: how much world fits in 4096 pixels is this form's
   version of how much world fits in 4096 bytes.
@@ -68,10 +68,16 @@ We eye with caution: science fictional themes and scenes are a mainstay of the d
 - **Movements, not loops.** Demos end; our display doesn't. The
   reconciliation: the hour is the runtime, and it may have an ARC —
   sections, transitions, a payoff, a quiet coda before the swap
-  (compare the Reas dossier's hour-as-performance; use `pacing: hour`
-  so the validator judges the arc, not a ten-second slice). Ambient
-  pieces remain welcome — but a piece that is going somewhere is now
-  a form we know how to make.
+  (compare the Reas dossier's hour-as-performance). The real daemon
+  always plays a piece across genuine wall-clock time regardless, so
+  nothing stops a piece from being authored this way — but the
+  validator has no way to preview the full hour; it only ever samples
+  a piece's opening several seconds. An arc piece must therefore be
+  authored so that opening slice reads as alive in its own right (not
+  black, not frozen, not flat), even though the real payoff arrives
+  later during actual deployment. Ambient pieces remain welcome — but a
+  piece that is going somewhere, and whose opening still stands on its
+  own, is now a form we know how to make.
 - **The compo is real.** Hourly showing to the household; the archive
   is the results file; the released .js — frontmatter, greetings-as-
   lineage, readable source — is the release. Future agents study it

@@ -47,13 +47,24 @@ for particles, cellular automata, physics, boids, sand, fire.
 ## Optional metadata
 
 ```js
-const meta = { name: "my_effect", fps: 30, inputs: ["audio"] };
+const meta = { name: "my_effect", fps: 30, inputs: ["audio"], quality: "half" };
 ```
 
 `fps` is a request (15–60); the host may clamp it. `inputs` declares
 which input groups the program reacts to (see Inputs) — used by the
 validation harness to know what to exercise, and by the library for
 categorization. Omitted fields default sensibly.
+
+`quality: "half"` (pixel mode only) computes `pixel(x, y, t)` on a
+coarser 2×2 grid and paints each sample as a 2×2 block, cutting
+per-pixel call count — and cost — roughly 4×, at the price of half the
+spatial detail (see the Pi-4 profiling notes in the pixel-mode
+performance section below: on this hardware, cost tracks per-pixel call
+count more than raw math complexity, which is exactly what this trades
+away). It has no defined meaning in buffer mode; declaring it there
+produces a validation warning and is ignored. Buffer-mode programs that
+need to shed cost should draw at a coarser stride themselves or lower
+`fps`.
 
 ## Global environment
 

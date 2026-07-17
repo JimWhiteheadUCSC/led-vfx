@@ -42,7 +42,7 @@ legible through the deviation; line over fill; monochrome or two-color
 restraint; the patience of exhausting a variation before abandoning it.
 Some series of Molnar that we like:
 - Homage to Dürer 400 Needles Crossed by a Thread: the geometric complexity created by the exploration of a parameter space of the crossings of lines inscribed inside a square region
-- Mouvement giratoire (rouge): a simple shape (a red rectange) rotated at an slight angle, then repeated around a circle, creates a piece that appears to have movement even though it is static.
+- Mouvement giratoire (rouge): a simple shape (a red rectangle) rotated at a slight angle, then repeated around a circle, creates a piece that appears to have movement even though it is static.
 - Moldrian series: the complexity that emerges from a simple set of line drawing rules, and the exploration of the resulting parameter space.
 - Gothique series: the play of shape and color in this series of drawings designed to evoke the structure of stained glass windows in Gothic churches
 - Saccades series: compositions consisting of horizontal lines (often of only 2 or 3 colors), where, in the center of each composition, the lines are interrupted more or less randomly on different lengths by a blank space (these are the saccades of the title). This creates pieces with a kind of movement in them created by the breaks.
