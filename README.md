@@ -138,8 +138,42 @@ keeps looping whatever `effects/playlist.json` already has.
 
 Needs `ANTHROPIC_API_KEY` (or `ANTHROPIC_AUTH_TOKEN`) — put it in a
 `.env` file at the repo root (gitignored, a plain `KEY=VALUE` per line)
-or export it before running. No systemd/hourly-timer wiring yet — this
-is meant to be run by hand for now.
+or export it before running.
+
+### Running it automatically (systemd timer)
+
+`agent/systemd/led-vfx-agent.{service,timer}` runs one session every
+hour via `systemctl`. Install (needs `sudo` — this repo can't run that
+for you):
+
+```
+sudo ln -sf "$(pwd)/agent/systemd/led-vfx-agent.service" /etc/systemd/system/led-vfx-agent.service
+sudo ln -sf "$(pwd)/agent/systemd/led-vfx-agent.timer" /etc/systemd/system/led-vfx-agent.timer
+sudo systemctl daemon-reload
+systemctl status led-vfx-agent.timer   # confirm: loaded, disabled, inactive
+```
+
+Installing does **not** start anything — the timer is deliberately left
+disabled so unattended, recurring Opus 4.8 spend is something you turn
+on yourself, not something a repo update silently enables:
+
+```
+sudo systemctl start led-vfx-agent.service   # run one session right now, manually
+journalctl -u led-vfx-agent.service -f       # watch it (or a past run) in the journal
+
+sudo systemctl enable --now led-vfx-agent.timer   # when you're ready for it to run hourly, forever
+```
+
+A few things this is deliberate about: `Type=oneshot` with no
+`Restart=` — a failed run (exhausted retries, a bad key, a network
+blip) waits for the next hourly trigger rather than retrying in a tight
+loop that would compound cost on a persistent problem; it just shows up
+as a failed unit (`systemctl --failed`) for whoever checks in. The timer
+sets `Persistent=false` — a missed run (machine was off) does not fire
+a catch-up burst on return; this is a creative cadence, not a critical
+job. The service runs as your own user, never root — the agent only
+ever reads/writes files under this repo and talks to the Anthropic API,
+no GPIO/hardware access needed.
 
 ## Validating an effect program
 

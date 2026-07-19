@@ -1,0 +1,18 @@
+[Unit]
+Description=LED VFX creativity agent (one session)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=ejw
+WorkingDirectory=%h/Code/led-vfx
+EnvironmentFile=%h/Code/led-vfx/.env
+ExecStart=/usr/local/bin/node agent/session.js
+# Generous but bounded - a hung API call/stream shouldn't run forever.
+TimeoutStartSec=1800
+# Deliberately no Restart= : a failure (exhausted retries, bad key, network
+# blip) should wait for the next hourly timer trigger, not retry in a tight
+# loop and compound API cost on a persistent problem. A failed run shows up
+# in `systemctl --failed` / `journalctl -u led-vfx-agent.service` for
+# whoever checks in on it - that's the intended visibility, not silence.

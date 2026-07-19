@@ -1,0 +1,13 @@
+[Unit]
+Description=Run the LED VFX creativity agent hourly
+
+[Timer]
+OnCalendar=hourly
+# Explicit, not just relying on the (also false) default: a missed run
+# (machine was off) should NOT trigger a catch-up burst on return - this is
+# a creative cadence, not a critical job, and an unattended catch-up run is
+# exactly the kind of surprise unattended API cost this deserves to avoid.
+Persistent=false
+
+[Install]
+WantedBy=timers.target
