@@ -6,8 +6,13 @@ Wants=network-online.target
 [Service]
 Type=oneshot
 User=ejw
-WorkingDirectory=%h/Code/led-vfx
-EnvironmentFile=%h/Code/led-vfx/.env
+# Plain paths, not %h - %h resolves relative to the SERVICE MANAGER's own
+# context (effectively root) on a system unit like this one, not to the
+# User= set here. Confirmed the hard way: relying on it produced "Failed
+# to load environment files" / "Failed to spawn 'start' task: No such
+# file or directory" (systemd was looking under /root, not /home/ejw).
+WorkingDirectory=/home/ejw/Code/led-vfx
+EnvironmentFile=/home/ejw/Code/led-vfx/.env
 ExecStart=/usr/local/bin/node agent/session.js
 # Generous but bounded - a hung API call/stream shouldn't run forever.
 TimeoutStartSec=1800
