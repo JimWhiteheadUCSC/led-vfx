@@ -138,9 +138,17 @@ class VfxRuntime {
       dtHandle.dispose();
     }
 
-    const { value } = this.context.getArrayBuffer(bufferHandle);
+    const bufferLifetime = this.context.getArrayBuffer(bufferHandle);
     bufferHandle.dispose();
-    return new Uint8Array(value); // defensive copy, decoupled from VM memory
+    const copy = new Uint8Array(bufferLifetime.value); // defensive copy, decoupled from VM memory
+    // getArrayBuffer's Lifetime wraps a native _malloc'd buffer that only
+    // this dispose() frees (see its disposer in quickjs-emscripten-core).
+    // Missing this call was THE actual leak behind the OOM/wedged-module
+    // saga: ~12KB (one framebuffer) leaked natively per frame, forever,
+    // confirmed by an A/B RSS test - identical code with and without this
+    // dispose() call showed linear growth vs. flat.
+    bufferLifetime.dispose();
+    return copy;
   }
 
   // Merges a patch into the sandbox's `input` object, one group at a time,
