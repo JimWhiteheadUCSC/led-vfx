@@ -8,7 +8,7 @@
 
 const fs = require('fs');
 const path = require('path');
-const { getQuickJS, shouldInterruptAfterDeadline } = require('quickjs-emscripten');
+const { newQuickJSWASMModule, shouldInterruptAfterDeadline } = require('quickjs-emscripten');
 
 const PRELUDE_SOURCE = fs.readFileSync(path.join(__dirname, 'prelude.js'), 'utf8');
 
@@ -25,10 +25,30 @@ const MEMORY_LIMIT_BYTES = 16 * 1024 * 1024;
 // tuned to dev-machine timing alone.
 const INTERRUPT_BUDGET_MS = 20 * 15;
 
+// One shared WASM module for the process's lifetime, holding many
+// short-lived QuickJSRuntime instances (one per loaded program) - not
+// the package's own internal getQuickJS() singleton, deliberately: we
+// need the ability to discard and rebuild this specific promise (see
+// resetQuickJSModule below), which an opaque package-level singleton
+// wouldn't let us do.
 let quickjsModulePromise = null;
 function loadQuickJS() {
-  if (!quickjsModulePromise) quickjsModulePromise = getQuickJS();
+  if (!quickjsModulePromise) quickjsModulePromise = newQuickJSWASMModule();
   return quickjsModulePromise;
+}
+
+// A runtime that exhausts memory can leave the *shared module's*
+// underlying WASM linear memory permanently wedged, even after that
+// runtime is disposed - WASM linear memory only grows, never shrinks.
+// Observed for real: after one 90-minute single-effect run hit an
+// allocation failure, every subsequent load in the same process failed
+// with "memory access out of bounds" from newRuntime() itself, forever
+// - not a script bug, the shared module was unusable. Call this to
+// discard it; the next loadQuickJS() call builds a genuinely fresh
+// module (a real WebAssembly instance with its own fresh linear
+// memory), not a retry of the wedged one.
+function resetQuickJSModule() {
+  quickjsModulePromise = null;
 }
 
 class VfxRuntime {
@@ -47,9 +67,20 @@ class VfxRuntime {
   // as any JS engine) into a fresh sandbox and runs its setup().
   static async load(source) {
     const quickjs = await loadQuickJS();
-    const rt = quickjs.newRuntime();
-    rt.setMemoryLimit(MEMORY_LIMIT_BYTES);
-    const context = rt.newContext();
+
+    let rt;
+    let context;
+    try {
+      rt = quickjs.newRuntime();
+      rt.setMemoryLimit(MEMORY_LIMIT_BYTES);
+      context = rt.newContext();
+    } catch (err) {
+      // Failure here is the shared module itself, not this program's
+      // source - see resetQuickJSModule's comment. Recover for next
+      // time rather than dooming every future load in this process.
+      resetQuickJSModule();
+      throw err;
+    }
 
     try {
       context.unwrapResult(context.evalCode(PRELUDE_SOURCE, 'prelude.js')).dispose();

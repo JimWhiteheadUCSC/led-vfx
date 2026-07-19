@@ -1,81 +1,103 @@
-# Handoff note — 2026-07-19 (night)
+# Handoff note — 2026-07-20 (morning)
 
 Scratch note for picking this session back up. Not part of the permanent
 docs set (CLAUDE.md / VFX_API.md remain authoritative) — delete this file
 once its contents are stale.
 
-## Status: real 90-minute daemon crash, root-caused and fixed (not yet committed)
+## Status: the crash fix from last night was necessary but not sufficient — module-level wedging found and fixed too
 
-Jim ran a third agent-authored piece manually and liked it enough to run
-it alone, single-file, for ~90 minutes straight (not via the playlist).
-The daemon died with a QuickJS-internal C assertion
-(`Aborted(Assertion failed: list_empty(&rt->gc_obj_list)...)`) surfacing
-as an uncaught `RuntimeError`.
+Jim restarted the daemon on `while-touching.js` alone overnight to test
+last night's fix (committed as `8ec6116`). It didn't crash again — but
+by morning the panel was dark, and the terminal was in a **tight
+infinite retry loop**:
 
-**Root cause, traced to source, not guessed:** the actual frame error
-that started it was `"Couldn't allocate memory to get ArrayBuffer"` —
-that string lives in `quickjs-emscripten-core`'s `QuickJSContext
-.getArrayBuffer()`, a *native* `_malloc` used once per frame to copy the
-12KB pixel buffer out of WASM memory. This is a **different allocator**
-than QuickJS's own tracked `rt.setMemoryLimit(16MB)` heap — it's the
-underlying Emscripten module's linear memory. `host/daemon.js` already
-caught that frame error and moved on to call `runtime.dispose()` — but
-a runtime left in that state can make `dispose()` itself trip the
-internal C assertion, and that call was unguarded. One 90-minute
-single-effect run (never rotating, since single-file mode uses
-`durationSeconds: Infinity` and playlist mode wasn't in use) was enough
-to hit it; a real stress test on the actual `while-touching.js` (killed
-early, see below) showed steady RSS growth over the run — consistent
-with either a genuine slow leak in the long-lived WASM instance or
-allocator fragmentation from ~162,000 alloc/free cycles of that same
-scratch buffer, not obviously a bug in `while-touching.js`'s own script
-logic (its state is fixed-size: one `Float32Array`, one 34-element
-array — read in full, nothing unbounded found).
+```
+[daemon] failed to load .../while-touching.js: RuntimeError: memory access out of bounds
+    at wasm://wasm/...:wasm-function[1065]:...
+    at QuickJSWASMModule.newRuntime (.../quickjs-emscripten-core/dist/index.js:...)
+    at VfxRuntime.load (.../host/runtime/vfxRuntime.js:50:24)
+```
 
-**Fix, written but NOT yet committed** (`host/daemon.js`): wrapped
-`runtime.dispose()` in try/catch at the end of `runProgram()`, and
-wrapped the `await runProgram(...)` call itself in `main()`'s loop in
-try/catch. Neither depends on knowing the exact internal failure mode —
-whatever a bad frame or a bad dispose throws, it's now logged and the
-daemon moves to the next playlist item (or, in single-file mode, simply
-keeps looping) instead of dying. This is the minimal version of
-CLAUDE.md's "watchdog falls back to a known-good piece" — full
-known-good-piece fallback is still a richer follow-up.
+Jim asked directly: did we fix the crash but not the underlying leak?
+**Yes, correctly identified.** And it's deeper than "one runtime leaks":
+`host/runtime/vfxRuntime.js` memoizes **one shared WASM module for the
+whole process**, and every `VfxRuntime.load()` just creates a new
+runtime inside it. `newRuntime()` throwing `memory access out of
+bounds` means the *shared module itself* — not just the runtime that
+OOM'd overnight — was permanently wedged. Disposing a runtime frees its
+own objects back to the module's allocator, but WASM linear memory only
+grows, never shrinks (a real platform limit); whatever state the module
+was left in after the earlier OOM meant it could never construct a
+fresh runtime again, for the rest of that process's life. That's why
+last night's try/catch (which stops the *process* from dying) didn't
+help here: every subsequent load was doomed by construction, forever,
+with nothing to catch and recover from at that layer.
 
-Two synthetic repro attempts (deliberately-leaking scratch effects, not
-committed, already deleted) didn't reproduce the *exact* assertion —
-one tripped the per-frame 300ms interrupt-deadline guard first, the
-other hit a clean "out of memory" `Error` that `dispose()` survived.
-Getting the exact assertion to fire synthetically would need sustained
-real time (the interpreter's per-frame cost roughly matches real-frame
-budget, so "simulate 90 minutes fast" isn't actually fast — confirmed
-firsthand when a stress-test run of the real `while-touching.js` was
-still on frame <10,000 after ~4 CPU-minutes). Given the fix's
-correctness doesn't depend on the precise failure string, this wasn't
-pushed further.
+**Fix, verified, NOT yet committed** (`host/runtime/vfxRuntime.js`):
+switched from the package's own `getQuickJS()` (an opaque, unresettable
+singleton) to `newQuickJSWASMModule()` (a factory that bypasses it),
+kept locally memoized the same way but now behind a `resetQuickJSModule()`
+escape hatch. `VfxRuntime.load()` now wraps just the
+`newRuntime()`/`setMemoryLimit()`/`newContext()` step (not script eval)
+in its own try/catch: a failure there means the *module*, not this
+program's source, is the problem, so it discards the memoized module
+before rethrowing. The next `loadQuickJS()` call then builds a
+genuinely fresh WASM instance with fresh linear memory. **Verified with
+a mock** (not a 90-minute wait — simulating a 90-minute wait costs
+roughly 90 CPU-minutes, confirmed the hard way last night): a fake
+module whose `newRuntime()` throws on its first instance behaves
+exactly like the real bug, and the very next load call correctly builds
+a second, working module and succeeds. Practical effect: instead of an
+unrecoverable infinite retry loop, a wedged module now costs one failed
+load (logged) and then a self-healed recovery on the next playlist/loop
+iteration — near-instant, not "dark until a human intervenes."
 
-**Not yet committed at all**: `effects/while-touching.js` (+ its
-`.gif`/3 `.still-N.gif` preview files) — the third agent-authored piece,
-sitting as untracked files in the working tree. Its `index.json` /
-`effects/playlist.json` entries and the `knowledge/artists/casey-reas.md`
-attempt note are already staged as modifications (from the same agent
-run) but likewise uncommitted.
+Deliberately **not** implemented: periodic preventive runtime recycling
+in single-file/infinite-duration mode (reload on a timer regardless of
+errors, to stay far from whatever's actually accumulating). The reactive
+fix above is simpler and has no aesthetic cost (it only interrupts
+when a failure would have happened anyway); periodic recycling would
+change `while-touching.js`'s specific artistic premise (continuous
+accumulation over the run) on an arbitrary schedule rather than on a
+real failure — worth Jim's opinion before adding, and not pursued
+unless the reactive fix turns out insufficient in practice.
+
+## Background (from last night, already committed as `8ec6116`)
+
+A ~90-minute single-effect run of `while-touching.js` (single-file
+mode, never rotating) hit `"Couldn't allocate memory to get
+ArrayBuffer"` — a *native* `_malloc` inside `quickjs-emscripten-core`'s
+`getArrayBuffer()`, used once per frame to copy the 12KB pixel buffer
+out of WASM memory, and a different allocator than QuickJS's own
+tracked `rt.setMemoryLimit(16MB)` heap. `host/daemon.js` caught that
+frame error, but the `runtime.dispose()` that followed tripped an
+internal C assertion (`list_empty(&rt->gc_obj_list)`), which aborted
+the whole process. That commit wrapped both `runtime.dispose()` and the
+`runProgram()` call itself in try/catch — necessary, and it did stop
+the process-level crash (confirmed: it didn't die overnight) — but as
+this morning showed, insufficient on its own, hence the module-reset
+fix above. `while-touching.js` itself was read in full both sessions;
+no unbounded state found in its own script logic (fixed-size
+`Float32Array`, fixed 34-element array) — this looks like a
+WASM/allocator-layer issue, not an effect-code bug.
 
 ## What's left
 
-- **Get Jim's go-ahead, then commit**: the `host/daemon.js` robustness
-  fix, plus the third piece (`while-touching.js` + previews +
-  `index.json`/`playlist.json`/`casey-reas.md` updates) — all from the
-  same investigation, reasonable to land together.
-- **Restart the real-hardware daemon** once the fix is committed — it's
-  presumably still down from the crash Jim reported.
-- Consider (not yet decided, worth raising with Jim): should
-  single-file mode periodically recycle the runtime (fresh
-  `VfxRuntime.load()`) even when playing one piece forever, as a
-  preventive measure independent of whatever's actually growing? This
-  wasn't implemented — the try/catch fix addresses "never crash," not
-  "never leak," and recycling changes the "no full repeat under ~30s"
-  aesthetic contract in ways worth Jim weighing in on first.
+- **Get Jim's go-ahead, then commit** `host/runtime/vfxRuntime.js`'s
+  module-reset fix.
+- **Restart the real-hardware daemon** once committed — presumably
+  still stuck in the retry loop until restarted.
+- Consider (not yet decided, worth raising with Jim): periodic
+  preventive runtime recycling in single-file mode — see above, holding
+  off unless the reactive fix proves insufficient.
+- Also worth watching: does the *same* wedging happen in normal
+  playlist mode, just on a much longer timescale (rotating through
+  short-duration pieces spreads the same shared-module lifetime across
+  many runtimes)? Nothing suggests it's while-touching-specific; the
+  shared module accumulates across every playlist rotation too, just
+  more slowly. Not yet observed for real in playlist mode — flagging so
+  a "playlist mode also went dark eventually" report doesn't look like
+  a new bug.
 - The timer is still not enabled (deliberate, per Jim's earlier call).
 - The render daemon's own systemd unit — still not built.
 - The wall-label server's own systemd unit — still not built.
@@ -87,8 +109,8 @@ run) but likewise uncommitted.
 
 ## Blockers
 
-None code-side. The real daemon is presumably down until Jim restarts it
-with the fix in place.
+None code-side. The real daemon is presumably still stuck in the retry
+loop from this morning until Jim restarts it with the new fix in place.
 
 ## Other context
 
