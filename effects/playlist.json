@@ -4,5 +4,6 @@
   { "file": "koi_pond.js", "duration": 30 },
   { "file": "tide_pool_lantern.js", "duration": 30 },
   { "file": "passerby.js" },
-  { "file": "saccades-after-molnar.js" }
+  { "file": "saccades-after-molnar.js" },
+  { "file": "while-touching.js" }
 ]

@@ -194,7 +194,21 @@ async function runProgram(item, display, sampler, isStopped) {
     }, frameInterval);
   });
 
-  runtime.dispose();
+  // A runtime that hit an allocation failure mid-frame can be left in a
+  // state where even disposing it is unsafe - quickjs-emscripten's WASM
+  // build can hit an internal C assertion here (observed for real: a
+  // 90-minute single-effect run hit "Couldn't allocate memory to get
+  // ArrayBuffer" - the native _malloc backing getArrayBuffer's per-frame
+  // copy-out, a different allocator than rt.setMemoryLimit's 16MB ceiling
+  // - and the *dispose* that followed the caught frame error, not the
+  // error itself, is what actually aborted the whole process). Nothing
+  // after this point may be allowed to take the daemon down; log and move
+  // on to the next item.
+  try {
+    runtime.dispose();
+  } catch (err) {
+    console.error(`[daemon] failed to dispose runtime for ${item.file} (continuing):`, err);
+  }
 }
 
 async function main() {
@@ -243,7 +257,18 @@ async function main() {
     }
     const item = playlist[index % playlist.length];
     index++;
-    await runProgram(item, display, sampler, () => stopped);
+    // Belt-and-suspenders on top of runProgram's own internal handling:
+    // no single playlist item, however it fails, should be able to take
+    // the whole daemon down. This is the minimal version of the "watchdog
+    // falls back to a known-good piece" behavior CLAUDE.md describes -
+    // full known-good-piece fallback is still a richer follow-up, but
+    // "never crash the process over one bad item" is the load-bearing
+    // part and didn't exist before this.
+    try {
+      await runProgram(item, display, sampler, () => stopped);
+    } catch (err) {
+      console.error(`[daemon] unexpected error running ${item.file}, skipping to next item:`, err);
+    }
   }
 
   sampler.close();
