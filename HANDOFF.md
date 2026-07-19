@@ -1,94 +1,92 @@
-# Handoff note — 2026-07-19 (later)
+# Handoff note — 2026-07-19 (evening)
 
 Scratch note for picking this session back up. Not part of the permanent
 docs set (CLAUDE.md / VFX_API.md remain authoritative) — delete this file
 once its contents are stale.
 
-## Status: the whole pipeline is live and confirmed working end-to-end on real hardware
+## Status: second agent-authored piece landed, and it surfaced a real daemon gap (now fixed)
 
-Everything is installed, fixed, and verified on glowy - not just "should
-work." In order:
+Jim ran the agent a second time (manually, timer still not enabled) and
+it produced **"Saccades, After Molnar"** (`effects/saccades-after-molnar.js`,
+`d2c57303-5cf6-4e2b-99e9-0d587b2e01c2`) — a Molnár-lineage piece
+(`inspiration` lineage off its own earlier Passerby), with a genuinely
+good attempt note: it names a real validation failure it hit (a
+near-still piece tripping the 0.15 temporal-variance "frozen" floor) and
+the fix (a whole-field brightness wave, not just the deviating region),
+drawing a real lesson for future near-still work. Visually confirmed via
+its stills — a faithful, good-looking realization of Molnár's Saccades.
 
-1. **Creativity agent** (CLAUDE.md phase 4) shipped and pushed earlier
-   today (`79d7ecb`) — see that commit / the prior handoff section in
-   git history for the full design. Its first piece, `effects/passerby.js`
-   ("Saccade"), is in the library.
-2. **Systemd timer for the agent** (`agent/systemd/led-vfx-agent.{service,timer}`,
-   pushed as `5cc4759`) — installed by Jim, left deliberately disabled
-   (see that commit for the reasoning: no auto-start, no `Restart=`,
-   `Persistent=false`, runs as `ejw` not root).
-3. **Found and fixed a real bug during Jim's first manual test run**:
-   `EnvironmentFile=%h/Code/led-vfx/.env` / `WorkingDirectory=%h/Code/led-vfx`
-   failed with "Failed to load environment files" / "Failed to spawn
-   'start' task: No such file or directory". Root cause: `%h` in a
-   **system** unit (as opposed to a per-user unit) resolves relative to
-   the service manager's own context (effectively root/`/root`), not to
-   that specific service's `User=ejw` — a real systemd gotcha, confirmed
-   the hard way rather than assumed. Fixed by hardcoding
-   `/home/ejw/Code/led-vfx` instead of relying on the specifier (more
-   correct for a single-Pi personal deployment anyway — nothing here
-   needs to be portable across users). Jim ran `daemon-reload` +
-   `reset-failed` + `start` after the fix and **confirmed it now works**.
-4. **Found and fixed a second real bug, unrelated to systemd**: the
-   wall-label's `run/current-piece.json` was stale (last updated two
-   days prior) even though `--display matrix` was actively running.
-   Root cause: `rpi-led-matrix` drops root to the `daemon` Linux user
-   after GPIO init (documented from an earlier session), and `run/` was
-   `755`-ish, owned by `ejw:ejw` — not writable by `daemon`. Every write
-   attempt was silently failing (caught, logged to stderr, easy to miss
-   under `sudo` in another terminal). Fixed with `chmod o+w run/` (no
-   `sudo` needed — `ejw` already owned the directory). Confirmed by
-   checking the file's mtime updated after Jim restarted the daemon.
-5. **Jim also switched his manual real-hardware daemon invocation from
-   single-file mode to `--playlist effects/playlist.json`** — single-file
-   mode (`node host/daemon.js effects/passerby.js ...`) loops forever on
-   one file and would never rotate to future agent-created pieces
-   regardless of the permissions fix. Confirmed: the panel is now
-   visibly looping through the whole library, and
-   `run/current-piece.json` updates on each rotation.
+**But it wasn't showing up on the real panel/kiosk.** Jim caught this
+and asked why. Root cause, found and fixed this session:
 
-**Net effect**: an hourly agent run, once Jim flips the timer on, will
-land a new piece in `index.json` + `effects/playlist.json`, and the
-already-running real-hardware daemon (playlist mode) will pick it up and
-show it on both the LED panel and the wall-label kiosk automatically -
-no further wiring needed for that path.
+`host/daemon.js`'s `main()` loaded `effects/playlist.json` **once** at
+startup into a plain array and looped that same in-memory array forever
+— it never re-read the file. The already-running real-hardware daemon
+(started before this second piece existed) had no way to ever notice
+`playlist.json` had grown, short of a manual restart. Confirmed by
+reading the code, not guessed. Fixed in `host/daemon.js`: the playlist
+is now re-read from disk at the top of every rotation (`while (!stopped)`
+loop), falling back to the last-known-good playlist if a read
+transiently fails (mid-write, briefly malformed) rather than crashing —
+same "degrade gracefully" spirit as the rest of the render loop. Single-
+file mode is unaffected (nothing to reload — it's one fixed file).
+
+**Related bonus fix, same session**: now that the daemon re-reads
+`playlist.json` on every rotation, `agent/library.js`'s plain
+`fs.writeFileSync` on `index.json`/`playlist.json` had a (small but real)
+window where a reader could land mid-write. Changed both to write-then-
+rename (atomic on POSIX) via a small `atomicWriteFileSync` helper — same
+idiom already used for the wall-label's `run/current-piece.json`
+handoff. Verified against a scratch copy: clean writes, no leftover
+`.tmp` files, existing formatting preserved.
+
+**Jim needs to restart the real-hardware daemon one more time** to pick
+up this fix (it's a code change, not something the running process can
+absorb on its own) — after that, no further restarts should be needed
+for future agent-created pieces to appear.
 
 ## What's left
 
-- **The timer is still not enabled** (deliberately) — Jim has only run
-  the service manually once (successfully, post-fix). Whenever he wants
-  the hourly cadence for real: `sudo systemctl enable --now
-  led-vfx-agent.timer`.
-- **The render daemon's own systemd unit** — still not built. Right now
-  it's a manually-started, manually-restarted `sudo node host/daemon.js
-  --playlist ... --display matrix ...` in a terminal Jim owns; it does
-  not survive a reboot or crash on its own. Separately deferred, per
-  Jim's explicit scoping from earlier today - but worth noting the
-  agent's systemd timer being live now makes this gap more visible than
-  before (a piece can land in the library with nothing running to ever
-  show it, if the daemon isn't up).
+- **Restart the daemon** to pick up the `host/daemon.js` fix (see
+  above) — `sudo node host/daemon.js --playlist effects/playlist.json
+  --display matrix --gpio-mapping adafruit-hat --gpio-slowdown 2`, same
+  invocation as before.
+- **The timer is still not enabled** (deliberately, per Jim's earlier
+  call) — only run manually twice so far, both times producing a real,
+  good piece. Whenever ready for the hourly cadence for real:
+  `sudo systemctl enable --now led-vfx-agent.timer`.
+- **The render daemon's own systemd unit** — still not built, still a
+  manually-started/restarted process in a terminal Jim owns. This gap
+  matters more now that it's been directly observed causing a visible
+  "piece exists but isn't showing" symptom once already (via the
+  playlist-reload issue) — worth remembering next time something looks
+  stale.
 - **The wall-label server's own systemd unit** — likewise still just
-  labwc-autostart-launched, not systemd. Separately deferred too.
+  labwc-autostart-launched. Separately deferred.
 - **The weekly review session** (naming/ratification, per
-  `knowledge/naming.md`) — still doesn't exist.
+  `knowledge/naming.md`) — still doesn't exist. Two pieces in, "Saccade"
+  is building a real practice (a second lineage citation back to its own
+  first piece) — the naming/manifesto thresholds in `naming.md` (12 kept
+  pieces, a contrast lineage, attempt notes under two dossiers) are still
+  far off, nothing to do here yet.
 - `meta.pacing = 'hour'` — still deferred from a prior session.
 - CLAUDE.md's small Pi-deploy-notes inaccuracies — still not folded in,
   flagged across many prior handoffs now, still genuinely low priority.
 
 ## Blockers
 
-None. Everything discussed above is code-side resolved and confirmed
-working on real hardware.
+None code-side. Jim needs to restart the daemon once (see above) for
+the fix to take effect on the running system.
 
 ## Uncommitted work
 
-None as of this note - the `%h` fix (`agent/systemd/led-vfx-agent.service`)
-still needs a commit+push (was about to happen when this note was
-written; do that first if it isn't already done). The `chmod o+w run/`
-fix has no repo footprint (it's a filesystem permission on a gitignored
-runtime directory, not a tracked file) - nothing to commit for that one,
-just worth remembering it's now part of the real deployment's state,
-same category as the earlier `chmod go+rx /home/ejw` fix.
+At the time of this note: `host/daemon.js` (the reload fix),
+`agent/library.js` (atomic writes), and everything from Jim's second
+agent run (`effects/saccades-after-molnar.*`, the `knowledge/artists/vera-molnar.md`
+attempt note, updated `index.json`/`effects/playlist.json`) are
+uncommitted. Check with Jim before committing, same as always — though
+by the time this is read, this may already be done; check `git log`
+before assuming.
 
 ## Other context
 

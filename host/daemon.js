@@ -199,7 +199,7 @@ async function runProgram(item, display, sampler, isStopped) {
 
 async function main() {
   const config = parseArgs(process.argv);
-  const playlist =
+  let playlist =
     config.mode === 'playlist'
       ? loadPlaylist(config.playlistPath)
       : [{ file: path.resolve(config.file), durationSeconds: Infinity }];
@@ -227,6 +227,20 @@ async function main() {
 
   let index = 0;
   while (!stopped) {
+    // Re-read the playlist file each time round, not just at startup -
+    // otherwise a piece the creativity agent commits mid-run (appending
+    // to effects/playlist.json) would never be picked up without a
+    // manual daemon restart. A transient bad read (mid-write, briefly
+    // malformed) falls back to the last-known-good playlist rather than
+    // crashing the daemon - same "degrade gracefully" spirit as the rest
+    // of the render loop.
+    if (config.mode === 'playlist') {
+      try {
+        playlist = loadPlaylist(config.playlistPath);
+      } catch (err) {
+        console.error(`[daemon] failed to reload playlist, keeping previous one: ${err.message}`);
+      }
+    }
     const item = playlist[index % playlist.length];
     index++;
     await runProgram(item, display, sampler, () => stopped);

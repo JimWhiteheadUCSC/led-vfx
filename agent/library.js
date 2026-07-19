@@ -39,6 +39,17 @@ function serializePlaylist(playlist) {
   return `[\n${lines.join(',\n')}\n]\n`;
 }
 
+// Write-then-rename (atomic on POSIX, same filesystem) rather than a
+// direct write - host/daemon.js now re-reads playlist.json on every
+// rotation (see host/daemon.js), so a reader could otherwise land mid-
+// write and see a truncated/partial file. Same idiom already used for
+// the wall-label's run/current-piece.json handoff.
+function atomicWriteFileSync(filePath, content) {
+  const tmpPath = `${filePath}.${process.pid}.tmp`;
+  fs.writeFileSync(tmpPath, content);
+  fs.renameSync(tmpPath, filePath);
+}
+
 // effects/<slug>.js if free; else effects/<slug>-<uuid's first 8 chars>.js.
 function resolveCollisionFreePath(slug, uuid) {
   const primary = path.join(EFFECTS_DIR, `${slug}.js`);
@@ -82,11 +93,11 @@ function commitNewPiece({ uuid, title, source, knowledgeUpdate, previewGifPath, 
 
   const index = JSON.parse(fs.readFileSync(INDEX_PATH, 'utf8'));
   index[uuid] = relPath;
-  fs.writeFileSync(INDEX_PATH, JSON.stringify(index, null, 2));
+  atomicWriteFileSync(INDEX_PATH, JSON.stringify(index, null, 2));
 
   const playlist = JSON.parse(fs.readFileSync(PLAYLIST_PATH, 'utf8'));
   playlist.push({ file: basename });
-  fs.writeFileSync(PLAYLIST_PATH, serializePlaylist(playlist));
+  atomicWriteFileSync(PLAYLIST_PATH, serializePlaylist(playlist));
 
   let knowledgePath = null;
   if (knowledgeUpdate && knowledgeUpdate.file && knowledgeUpdate.note) {
