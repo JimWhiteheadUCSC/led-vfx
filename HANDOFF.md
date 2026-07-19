@@ -1,192 +1,181 @@
-# Handoff note — 2026-07-17
+# Handoff note — 2026-07-18/19
 
 Scratch note for picking this session back up. Not part of the permanent
 docs set (CLAUDE.md / VFX_API.md remain authoritative) — delete this file
 once its contents are stale.
 
-## Status: wall-label confirmed on real hardware; knowledge base reviewed; quality:'half' built, pacing:'hour' deferred
+## Status: the creativity agent (CLAUDE.md phase 4) is built, verified, and has already produced a real piece
 
-Wall-label feature (previous handoff's open item) is fully done and
-confirmed on real hardware: after Jim's reboot, the kiosk window came up
-via `~/.config/labwc/autostart`, initially showing the neutral "waiting"
-state (correct — nothing had written `run/current-piece.json` yet since
-reboot, and the render daemon isn't auto-started, by design). Starting
-`npm run sim` populated it immediately and Jim confirmed the physical
-HDMI panel shows live title/rationale in sync with the SimDisplay web
-view. Committed and pushed (`d5700a9`). Nothing left on this thread.
-
-Jim then brought in the knowledge base he'd developed in a separate
-session: `knowledge/README.md` (the craft/artists room-split framing)
-plus `knowledge/artists/{4k-intro,casey-reas,jim-campbell,vera-molnar}.md`
-and `knowledge/craft/effect-bestiary.md`. Reviewed in detail — see below.
+This was the last unbuilt major piece of the project. `agent/` didn't
+exist at the start of this session; by the end, a real `node agent/session.js`
+run against `claude-opus-4-8` studied the knowledge base + archive, wrote
+a genuinely good new effect (`effects/passerby.js`, a Jim-Campbell-lineage
+point-light walker) on its **first attempt**, named itself an apprentice
+("Saccade") correctly per `knowledge/naming.md`'s rules, wrote a real
+`contrast` lineage citation against `fireflies.js` with specific
+reasoning, and appended an honest, well-evidenced note to a new
+`knowledge/artists/saccade.md` file — including candidly flagging what
+it *couldn't* verify (motion, since it only ever sees still frames).
+Everything landed correctly: `index.json`/`effects/playlist.json`
+updated, no leftover scratch files, existing file formatting preserved.
 
 ## What's done
 
-**Knowledge base review** — overall very strong (the craft/artists split
-with the "could a reasonable artist disagree?" sorting test is a clean
-piece of information architecture; each dossier does real translation
-work from a real practice to panel-specific technique, not just vibes).
-Found and fixed three small issues while reviewing:
-- `4k-intro.md` stated "40.96 ms per frame is this house's 4096 bytes" —
-  factually wrong (the real, host-enforced budget is **20ms**; 40.96
-  looks like a deliberate 4096-hundredths-of-a-ms numerology pun that
-  accidentally got stated as if it were the real number). Fixed to say
-  20ms.
-- Two typos: `casey-reas.md` had "so wWork in this lineage"; `vera-
-  molnar.md` had "a red rectange... at an slight angle." Both fixed.
+**`agent/` (new)**:
+- `session.js` — entry point (`node agent/session.js [--dry-run]
+  [--model <id>] [--max-attempts <n>]`). Owns the retry loop and the
+  `attempts` state; commits on success via `library.js`, exits 1 on
+  exhaustion touching nothing.
+- `config.js` — constants (model=`claude-opus-4-8`, effort=`xhigh`,
+  `max_tokens`=64000, `MAX_ATTEMPTS`=3, `RECENT_PIECES_LIMIT`=8, etc.)
+  and a hand-rolled `.env` loader (no `dotenv` dependency).
+- `archive.js` — gathers the recent-pieces archive from `index.json`,
+  capped to the 8 most recent by `created` date; backfills missing
+  preview stills for pieces older than this session (self-healing, zero
+  API cost).
+- `prompt.js` — builds the `system`/`messages` arrays with three
+  prompt-cache tiers (frozen contract, knowledge base, per-session
+  archive block — see "Design decisions" below).
+- `tool.js` — the single `write_effect` tool. Host-owned attempt
+  counter (not the model's `stop_reason`) decides when the retry loop is
+  actually done; cleans up preview artifacts from failed attempts.
+- `knowledge.js` — reads all of `knowledge/*.md` + `artists/*.md` +
+  `craft/*.md` (generic glob, not hardcoded filenames — picks up
+  `naming.md` automatically); `appendKnowledgeNote()` with a path
+  allowlist (must stay directly under `knowledge/artists/` or
+  `knowledge/craft/`; `effect-bestiary.md` is rejected — "many books
+  about cooking," not edited in place).
+- `library.js` — `slugify`/`commitNewPiece`. Writes the effect,
+  updates `index.json` + `effects/playlist.json` (preserving their
+  existing hand-formatted styles exactly, not `JSON.stringify`'s
+  default), renames the validating attempt's scratch preview artifacts
+  to the final name.
 
-**`meta.quality = 'half'` — built, verified, done.** The knowledge base
-referenced this and `meta.pacing = 'hour'` as if they were real contract
-fields; neither existed anywhere in code. Jim's call after reviewing the
-design: build `quality` now (simple, low-risk), defer `pacing` (see
-below for why).
-- `host/runtime/prelude.js`'s `__vfxFrame` dispatch: pixel-mode +
-  `quality:'half'` samples `pixel(x,y,t)` on a 2x2 grid (true 0..63
-  coords passed through, so the effect's own normalization stays
-  correct with zero awareness of quality mode) and paints each result
-  as a 2x2 block. Zero changes needed to `host/runtime/vfxRuntime.js` or
-  `host/daemon.js` — the global `meta` a program declares stays live in
-  the same QuickJS context prelude.js's own code runs in, so this is
-  entirely sandbox-internal and benefits the real daemon and the
-  validator identically (they share this file verbatim).
-- `validate/index.js`: new warning if `quality` is declared on a
-  buffer-mode program (no defined meaning there), mirroring the existing
-  unknown-`meta.inputs`-group warning pattern.
-- `docs/VFX_API.md`: documented in the "Optional metadata" section.
-- **Verified on real hardware this session**: a test harness (temporary,
-  not committed) confirmed pixel-mode call count drops exactly 4096→1024
-  (the predicted 4x) with `quality:'half'`; mean frame time on a
-  deliberately expensive uncached test effect (raw `noise2()`/`hsv()`
-  per pixel) dropped 67.94ms→21.48ms (~3.2x — slightly under the
-  theoretical 4x since `setPixel` call count is unchanged, only the
-  expensive per-pixel math shrinks, consistent with this session's
-  earlier `plasma_bloom.js` profiling findings); the buffer-mode warning
-  fires correctly; `npm run validate -- --all` still passes all four
-  seed effects unchanged (none declare `quality`, proving the default
-  path is untouched).
+**Modified**: `validate/preview.js` gained `writePreviewStills()` (see
+below); `validate/index.js` threads `opts.stillPaths` through and
+returns them in the report; `package.json` got `@anthropic-ai/sdk` +
+an `"agent"` script; `README.md` got a usage section.
 
-**`4k-intro.md`'s `pacing: hour` claim softened** — see next section for
-why it wasn't built. The artistic idea (a piece with a deliberate
-hour-scale arc) is kept; the fabricated field reference is removed, and
-a new practical consequence is spelled out: since the real daemon always
-plays a piece across genuine wall-clock time regardless of any
-validator feature, nothing stops a piece from being authored this way —
-but the validator has no way to preview the full hour, so an arc piece
-must be authored so its opening several seconds *also* reads as alive
-(not black/frozen/flat), even though the real payoff arrives later
-during actual deployment.
+## Design decisions (for consistency going forward)
 
-## `pacing: 'hour'` — designed in detail, deferred, not built
+- **Vision-limitation fix, the most important finding this session**:
+  Claude's vision only ever sees the first frame of an animated GIF —
+  confirmed against the live API docs, not assumed. Feeding the existing
+  animated `.gif` preview as "the agent sees its past work" would
+  silently only ever show frame 0. Fixed by adding
+  `writePreviewStills()` (reuses `writePreviewGif`'s exact
+  upscale→quantize→applyPalette pipeline, writes N genuinely static
+  single-frame GIFs sampled across the run instead) — no new dependency,
+  no duplicated rendering logic.
+- **Host owns identity, agent owns content** (the project's existing
+  razor, applied here twice): the host generates the piece's UUID via
+  `crypto.randomUUID()` before the session starts and tells the agent
+  the exact string to embed — removes a whole class of possible
+  validation failures. Same split for `knowledgeUpdate`: the agent
+  proposes prose, the host stamps date/UUID and only commits it if that
+  exact `write_effect` call validated.
+- **One tool, not two.** `knowledgeUpdate` is an optional field on
+  `write_effect` rather than a separate tool, specifically so a lesson
+  is never recorded about a piece that didn't pass.
+- **Retry loop uses the SDK's Tool Runner** (`client.beta.messages.toolRunner`)
+  but the "stop after exactly N attempts" decision is host-owned
+  (`attempts.count`/`attempts.passed` in a closure), not derived from
+  `stop_reason` — each loop iteration yields the assistant message
+  *before* its tool executes, so breaking on the outside prevents a 4th
+  validation from ever running. The tool's own `run()` also short-
+  circuits past the limit, belt-and-suspenders. `max_iterations` (16) is
+  set as a generous *outer* safety net only — it's not tightly bound to
+  `MAX_ATTEMPTS` because web-search/fetch calls also consume iterations.
+- **Prompt caching, three tiers**: (1) `docs/VFX_API.md` +
+  `host/runtime/prelude.js` concatenated into one system block (either
+  alone is close to the ~4096-token minimum cacheable prefix on
+  Opus-tier models; combined they clear it comfortably) — practically
+  never changes. (2) the knowledge base — changes only when the agent
+  appends a lesson. (3) the archive+stills block, cached at the end of
+  the one user message — volatile *across* hours but fully static
+  *within* one session's retries, which is the highest-value breakpoint
+  in this design since the Messages API resends full history every turn.
+- **Web research tools** (`web_search`/`web_fetch`, currently the
+  `_20260318` dated variants — confirmed against the installed SDK,
+  newer than what was cached in the skill's docs) are Anthropic
+  server-side tools, not a client-side fetch we'd execute ourselves — no
+  code on this machine ever fetches an agent-chosen destination.
+  `max_uses: 5` each. Security reasoning: the only actionable output of
+  the whole session is still the single `write_effect` call, which must
+  pass `validateProgram()` and then runs in the QuickJS sandbox with
+  zero host access — that boundary already contains the worst case of a
+  prompt-injected search result. The uncontained residual risk is
+  content-quality (a misleading `knowledgeUpdate` note), not security.
+- **`betaTool()` from `@anthropic-ai/sdk/helpers/beta/json-schema`** is
+  the real raw-JSON-schema tool-runner helper (confirmed by reading the
+  installed package's source, not guessed) — no `zod` dependency needed.
+- **`knowledge/naming.md`** (added by Jim mid-session): the agent must
+  know it's in an *hourly working session*, not the *weekly review
+  session* naming/ratification is gated to (which doesn't exist yet) —
+  this is stated explicitly in the final instruction block, since
+  `naming.md` itself can't distinguish session types, only the host can.
+  The real run respected this correctly on its own (see Status above).
 
-Worth recording in full since real design work happened here across two
-sub-agent passes before Jim's call to stop — so a future session
-revisiting this doesn't have to re-derive it.
+## What's left
 
-**The idea**: today's validator always runs a fixed `TOTAL_FRAMES=300`
-at `dt=1/fps` — for a 30fps piece, only the opening ~10 simulated
-seconds, regardless of a piece's real deployed runtime (~1 hour). A
-piece designed with a deliberate hour-scale arc (dark → build → climax
-— the 4K-intro and Reas dossiers' best ideas) can never have that arc
-actually exercised or previewed by the validator today; `pacing:'hour'`
-would have told the harness to sample across a simulated hour instead.
-
-**The converged design** (validator-side only — zero effect on the real
-daemon, which always plays a program in real wall-clock time regardless
-of any pacing metadata):
-- Split by `runtime.mode`, because pixel and buffer mode have genuinely
-  different correctness requirements:
-  - **pixel mode**: cheap and exact. `pixel(x,y,t)` structurally never
-    receives `dt` (confirmed: not part of the call signature at all, not
-    just convention), so there's no integration-correctness risk to
-    giant time jumps — just call `runPass(runtime, 300, 3600/299, null)`
-    directly. Same cost as today, just landing on evenly-spaced `t`
-    values across the full simulated hour instead of the first 10s.
-  - **buffer mode**: needs real fine-grained `dt` stepping to keep
-    velocity/state integration correct (a naive giant-dt version would
-    produce overshoot/teleporting/broken bounce logic that never happens
-    in real daemon operation). Run the full simulation at `dt=1/fps` for
-    `totalSteps = Math.round(3600*fps)` real calls, but only *retain*
-    every Nth call's frame buffer for metrics/GIF (bounded memory: all
-    108,000 retained 12KB buffers would be ~1.3GB).
-- `runPass` would need a `{retainStride, maxWallMs}` options object
-  (backward compatible, defaults preserve today's exact behavior).
-- `validate/preview.js` and `validate/inputScenarios.js` need **zero**
-  code changes — confirmed by both sub-agent passes. `writePreviewGif`
-  just re-samples whatever `frames` array it's given and computes delay
-  from the real `fps`; fed hour-paced frames it naturally produces a
-  ~10s "time-lapse trailer," which is the right behavior, not a gap.
-  `synthClock`'s day-sweep is already `frameIndex/totalFrames`-relative,
-  intentionally orthogonal to a piece's own pacing (arc-length and
-  hour-of-day-robustness are different concerns) — CLAUDE.md/
-  VFX_API.md already describe the day-sweep as independent of this.
-
-**Why it's deferred — the real risk, not just Jim's discomfort with
-complexity**: a buffer-mode piece that's merely *within* the existing
-20ms frame budget (a legitimately passing piece, not a pathological one)
-costs `108,000 x 20ms ≈ 36 minutes` for the neutral pass alone at 30fps.
-CLAUDE.md's creativity loop retries up to 3 times per hour — that alone
-could blow past the hourly cadence with no way to fail fast. A
-`maxWallMs` ceiling (polled *inside* the loop, since `renderFrame` is
-fully synchronous with no `await` anywhere in its call chain — an outer
-`Promise.race`/`setTimeout` would never fire until the loop yields on
-its own, i.e. never) would close this specific hole, but Jim's call is
-that the whole feature adds real brittleness to the validator for a
-benefit that hasn't been proven yet — not worth it until there's a
-concrete piece that actually needs it. **If revisited**: the design
-above (including the `runPass` diff and the wall-clock-ceiling
-mechanism) is ready to implement close to as-is; re-read this section
-rather than redesigning from scratch.
-
-## What's left — the actual next task
-
-**The artist-agent code itself** (CLAUDE.md phase 4) — still not
-started at all. `agent/` doesn't exist yet. This is the big remaining
-piece: the hourly creativity session (Anthropic API calls, prompt design
-against `docs/VFX_API.md` + the now-reviewed `knowledge/` + past
-pieces' frontmatter and GIF previews), the validate-with-retry loop
-(up to 3 retries per CLAUDE.md, then fall back to replaying a library
-piece), and `index.json`/library management (writing new pieces,
-lineage citation, appending lessons to the knowledge base). No design
-decisions made on this yet — starting fresh next.
-
-## Still deferred (unchanged)
-
-- Phase 1: crossfade-in, watchdog fallback-to-known-good.
-- Phase 5 remainder: systemd units (render daemon + wall-label server
-  boot-start/restart — the labwc autostart added last session only
-  covers "today's graphical session," not boot-time/cold-start); the
-  GPIO4→GPIO18 PWM jumper mod.
+- **Systemd/hourly-timer wiring** — explicitly out of scope this
+  session, same as the wall-label's autostart was scoped narrowly.
+  `agent/session.js` is meant to be run by hand today, by a timer unit
+  later.
+- **The weekly review session** (naming/ratification, per
+  `knowledge/naming.md`) — doesn't exist. Not started; `naming.md`
+  itself anticipates this as a separate, later piece.
+- **`RECENT_PIECES_LIMIT` (8) will eventually matter** — currently a
+  no-op at 5 pieces. No summarization/curation built on top of it yet;
+  deliberately deferred until there's real data to tune against (same
+  pattern as this project's other "tune once you have real data" calls).
+- `meta.pacing = 'hour'` — still deferred from earlier this session
+  (see the previous handoff section preserved in git history / this
+  file's prior version), unrelated to the agent work but worth
+  remembering if an agent-authored piece ever wants an hour-scale arc.
 - CLAUDE.md's small Pi-deploy-notes inaccuracies (rpi-led-matrix
-  install-skip wording, missing `npm approve-scripts` mention, not
-  mentioning this is the full Raspberry Pi Desktop image rather than
-  headless Lite) — still not folded in, still low priority.
+  install-skip wording, missing `npm approve-scripts` mention, headless
+  vs. full-desktop) — still not folded in, still low priority, flagged
+  across multiple prior handoffs now.
 
 ## Blockers
 
-None. Everything in this session is implemented and verified; nothing
-committed yet (see below).
+None. The agent works end-to-end against the real API.
 
 ## Uncommitted work
 
-Everything from this session is uncommitted. `git status --short`:
+Everything from this session is uncommitted, including the real piece
+the agent produced (`effects/passerby.js` and friends) and the new
+`knowledge/artists/saccade.md`/`knowledge/naming.md` files. `git status
+--short`:
 
 ```
- M docs/VFX_API.md
+ M .gitignore
+ M README.md
  M effects/fireflies.gif
  M effects/koi_pond.gif
+ M effects/playlist.json
  M effects/tide_pool_lantern.gif
- M host/runtime/prelude.js
- M knowledge/artists/4k-intro.md
- M knowledge/artists/casey-reas.md
- M knowledge/artists/vera-molnar.md
+ M index.json
+ M package-lock.json
+ M package.json
  M validate/index.js
+ M validate/preview.js
+?? agent/
+?? effects/fireflies.still-{1,2,3}.gif
+?? effects/koi_pond.still-{1,2,3}.gif
+?? effects/passerby.gif
+?? effects/passerby.js
+?? effects/passerby.still-{1,2,3}.gif
+?? effects/plasma_bloom.still-{1,2,3}.gif
+?? effects/tide_pool_lantern.still-{1,2,3}.gif
+?? knowledge/artists/saccade.md
+?? knowledge/naming.md
 ```
 
-(`knowledge/README.md`, `knowledge/artists/jim-campbell.md`, and
-`knowledge/craft/effect-bestiary.md` are Jim's own new files from his
-separate session, already in the working tree but not yet committed
-either — the whole knowledge base is landing as part of whatever commit
-covers this session.) Check with Jim before committing, same as always.
+Check with Jim before committing, same as always. Note `.env` is
+correctly gitignored and won't show up here — nothing to scrub before
+committing.
 
 ## Other context
 

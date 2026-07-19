@@ -58,4 +58,37 @@ function writePreviewGif({ frames, width, height, fps, outputPath }) {
   return outputPath;
 }
 
-module.exports = { writePreviewGif };
+// Claude's vision only ever sees the first frame of an animated GIF
+// ("Animations are unsupported, and only the first frame is used" - the
+// Vision API docs) - so the animated preview above is useless as a way
+// for the creativity agent to actually see a piece's motion/character.
+// This renders a handful of genuinely static single-frame GIFs instead,
+// sampled at even fractions across the run, reusing the same pipeline.
+// frames/width/height: same as writePreviewGif. outputPaths: one path
+// per still - its length determines how many stills are rendered.
+function writePreviewStills({ frames, width, height, outputPaths }) {
+  const outW = width * UPSCALE;
+  const outH = height * UPSCALE;
+  const n = outputPaths.length;
+
+  for (let i = 0; i < n; i++) {
+    // Evenly spaced across the run, e.g. [0.15, 0.5, 0.85] for n=3.
+    const frac = (i + 1) / (n + 1);
+    const frameIdx = Math.min(frames.length - 1, Math.floor(frac * frames.length));
+    const frame = frames[frameIdx];
+
+    const rgba = upscaleToRgba(frame, width, height, UPSCALE);
+    const palette = quantize(rgba, 256);
+    const index = applyPalette(rgba, palette);
+
+    const gif = GIFEncoder();
+    gif.writeFrame(index, outW, outH, { palette, delay: 0, repeat: 0 });
+    gif.finish();
+
+    fs.writeFileSync(outputPaths[i], gif.bytes());
+  }
+
+  return outputPaths;
+}
+
+module.exports = { writePreviewGif, writePreviewStills };

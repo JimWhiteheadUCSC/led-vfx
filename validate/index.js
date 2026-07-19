@@ -20,7 +20,7 @@ const { VfxRuntime } = require('../host/runtime/vfxRuntime');
 const { validateFrontmatter } = require('./frontmatter');
 const { INPUT_GROUPS, NEUTRAL_INPUT, synthesizeFrame } = require('./inputScenarios');
 const { computeMetrics, evaluateLiveliness, evaluateFrameTiming } = require('./metrics');
-const { writePreviewGif } = require('./preview');
+const { writePreviewGif, writePreviewStills } = require('./preview');
 
 const TOTAL_FRAMES = 300;
 const WIDTH = 64;
@@ -73,7 +73,7 @@ async function validateProgram(source, opts = {}) {
     runtime = await VfxRuntime.load(source);
   } catch (err) {
     errors.push(`load failed: ${err.message}`);
-    return { pass: false, checks, metrics: null, warnings, errors, gifPath: null, frontmatter: fm.frontmatter };
+    return { pass: false, checks, metrics: null, warnings, errors, gifPath: null, stillPaths: [], frontmatter: fm.frontmatter };
   }
 
   const declaredInputs = Array.isArray(runtime.meta.inputs)
@@ -131,6 +131,23 @@ async function validateProgram(source, opts = {}) {
     }
   }
 
+  // Static stills (not the animated GIF) for the creativity agent's vision
+  // context - see writePreviewStills for why the animated GIF doesn't work
+  // for this. Only rendered when the caller asks for them (opts.stillPaths).
+  let stillPaths = [];
+  if (neutral.frames.length >= 2 && opts.stillPaths && opts.stillPaths.length > 0) {
+    try {
+      stillPaths = writePreviewStills({
+        frames: neutral.frames,
+        width: WIDTH,
+        height: HEIGHT,
+        outputPaths: opts.stillPaths,
+      });
+    } catch (err) {
+      warnings.push(`preview stills generation failed: ${err.message}`);
+    }
+  }
+
   runtime.dispose();
 
   // Synthesized pass: fresh sandbox so state doesn't carry over from the
@@ -163,6 +180,7 @@ async function validateProgram(source, opts = {}) {
     warnings,
     errors,
     gifPath,
+    stillPaths,
     frontmatter: fm.frontmatter,
     declaredInputs,
   };

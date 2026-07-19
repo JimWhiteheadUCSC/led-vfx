@@ -116,6 +116,31 @@ start the render daemon itself — that's still a manual `npm run sim` (or
 the real-hardware command above) until systemd units exist. Logs land in
 `~/.cache/wall-label-server.log` and `~/.cache/wall-label-chromium.log`.
 
+## The creativity agent
+
+```
+npm run agent                             # one hourly-style session
+npm run agent -- --dry-run                # assemble the payload, no API call
+npm run agent -- --model claude-haiku-4-5 --max-attempts 1   # cheaper test run
+```
+
+Studies `knowledge/` and the recent piece archive (source + a few still
+frames per piece — not the animated preview, since vision APIs only ever
+see an animated GIF's first frame), writes one new effect via a single
+`write_effect` tool call, and validates it through `validate/`. Up to
+`--max-attempts` (default 3) retries on failure, feeding the validator's
+errors back so it can correct itself. On success: the effect lands in
+`effects/`, `index.json` and `effects/playlist.json` are updated so the
+render daemon picks it up on its next rotation, and (if proposed) a
+knowledge-base note is appended — all only committed if that exact
+submission passed. On exhaustion: nothing is touched, the daemon just
+keeps looping whatever `effects/playlist.json` already has.
+
+Needs `ANTHROPIC_API_KEY` (or `ANTHROPIC_AUTH_TOKEN`) — put it in a
+`.env` file at the repo root (gitignored, a plain `KEY=VALUE` per line)
+or export it before running. No systemd/hourly-timer wiring yet — this
+is meant to be run by hand for now.
+
 ## Validating an effect program
 
 ```
