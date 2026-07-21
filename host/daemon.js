@@ -42,6 +42,7 @@ function parseArgs(argv) {
   let lat = DEFAULT_LAT;
   let lon = DEFAULT_LON;
   let audioSource = DEFAULT_AUDIO_SOURCE;
+  let audioDevice;
   let display = DEFAULT_DISPLAY;
   let gpioMapping = DEFAULT_GPIO_MAPPING;
   let gpioSlowdown = DEFAULT_GPIO_SLOWDOWN;
@@ -77,6 +78,13 @@ function parseArgs(argv) {
     args.splice(audioIdx, 2);
   }
 
+  const audioDeviceIdx = args.indexOf('--audio-device');
+  if (audioDeviceIdx !== -1) {
+    audioDevice = args[audioDeviceIdx + 1];
+    if (!audioDevice) throw new Error('--audio-device requires an ALSA device argument, e.g. plughw:3,0');
+    args.splice(audioDeviceIdx, 2);
+  }
+
   const displayIdx = args.indexOf('--display');
   if (displayIdx !== -1) {
     display = args[displayIdx + 1];
@@ -108,17 +116,17 @@ function parseArgs(argv) {
 
   if (args[0] === '--playlist') {
     if (!args[1]) throw new Error('Usage: daemon.js --playlist <playlist.json>');
-    return { mode: 'playlist', playlistPath: args[1], port, lat, lon, audioSource, display, gpioMapping, gpioSlowdown, brightness };
+    return { mode: 'playlist', playlistPath: args[1], port, lat, lon, audioSource, audioDevice, display, gpioMapping, gpioSlowdown, brightness };
   }
   if (args[0] && !args[0].startsWith('--')) {
-    return { mode: 'single', file: args[0], port, lat, lon, audioSource, display, gpioMapping, gpioSlowdown, brightness };
+    return { mode: 'single', file: args[0], port, lat, lon, audioSource, audioDevice, display, gpioMapping, gpioSlowdown, brightness };
   }
 
   throw new Error(
     'Usage:\n' +
       '  node host/daemon.js <effect.js> [--lat 36.97 --lon -122.03 --audio synthetic]\n' +
-      '                      [--display sim|matrix] [--gpio-mapping adafruit-hat]\n' +
-      '                      [--gpio-slowdown 2] [--brightness 100]\n' +
+      '                      [--audio-device plughw:3,0] [--display sim|matrix]\n' +
+      '                      [--gpio-mapping adafruit-hat] [--gpio-slowdown 2] [--brightness 100]\n' +
       '  node host/daemon.js --playlist <playlist.json> [--port 8080] [...same flags]'
   );
 }
@@ -218,6 +226,25 @@ async function main() {
       ? loadPlaylist(config.playlistPath)
       : [{ file: path.resolve(config.file), durationSeconds: Infinity }];
 
+  // Sampler before display, deliberately: on the real matrix backend,
+  // rpi-led-matrix drops the process from root to the low-privilege
+  // `daemon` Linux user right after GPIO init (same mechanism that
+  // required the run/ permission fix for the wall-label). That drop
+  // doesn't refresh supplementary groups (confirmed for real: adding
+  // `daemon` to the `audio` group made no difference), so a USB mic
+  // spawned via `arecord` after display.init() can never get permission
+  // to open /dev/snd/* no matter how the device's own permissions are
+  // set up. Spawning arecord here, while still root, sidesteps the
+  // whole question - a child process keeps the privilege level it had
+  // at fork time regardless of what the parent does to itself later.
+  const sampler = createInputSampler({
+    lat: config.lat,
+    lon: config.lon,
+    audioSource: config.audioSource,
+    audioDevice: config.audioDevice,
+  });
+  await sampler.init();
+
   const display = createDisplay({
     kind: config.display,
     width: 64,
@@ -228,9 +255,6 @@ async function main() {
     brightness: config.brightness,
   });
   await display.init();
-
-  const sampler = createInputSampler({ lat: config.lat, lon: config.lon, audioSource: config.audioSource });
-  await sampler.init();
   display.onButtonEvent((down) => sampler.handleButtonEvent(down));
 
   let stopped = false;

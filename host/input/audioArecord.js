@@ -18,6 +18,8 @@ const FFT = require('fft.js');
 const SAMPLE_RATE = 44100;
 const WINDOW_SIZE = 1024; // must be a power of two for fft.js
 const STARTUP_GRACE_MS = 200;
+const MAX_SPAWN_ATTEMPTS = 4;
+const RETRY_DELAY_MS = 750;
 
 const BASS_HZ = [20, 250];
 const MID_HZ = [250, 2000];
@@ -37,7 +39,14 @@ function lerp(a, b, u) {
 }
 
 class ArecordAudioSource {
-  constructor() {
+  // `device` is an ALSA device string (e.g. "plughw:3,0" or
+  // "plughw:CARD=BRIO,DEV=0", from `arecord -l`/`arecord -L`). Omitted,
+  // arecord falls back to ALSA's "default" device, which on a Pi with a
+  // USB mic added later is often the wrong one (or none at all, once
+  // onboard audio is blacklisted per the deploy checklist) - this was
+  // silently the case here until it was made explicit.
+  constructor(device) {
+    this.device = device || null;
     this.available = false;
     this.proc = null;
     this.ring = new Float32Array(WINDOW_SIZE);
@@ -50,32 +59,78 @@ class ArecordAudioSource {
     this.beatCooldown = 0;
   }
 
+  // Retries on a fast (within-grace-window) failure to start: observed
+  // for real on a Pi 4 with a USB mic - a device open that fails right
+  // at daemon startup (right after the GPIO/PWM matrix display
+  // initializes - plausibly a brief shared-hardware disruption, the
+  // same category of conflict CLAUDE.md already documents for onboard
+  // audio vs PWM, just transient here instead of permanent) can succeed
+  // moments later with the identical device string and no other change.
+  // A one-time startup race shouldn't cost the whole session's audio.
   async init() {
-    try {
-      this.proc = spawn('arecord', ['-f', 'S16_LE', '-r', String(SAMPLE_RATE), '-c', '1', '-t', 'raw'], {
-        stdio: ['ignore', 'pipe', 'pipe'],
-      });
-    } catch (err) {
-      console.warn('[ArecordAudioSource] failed to spawn arecord:', err.message);
-      this.available = false;
-      return;
+    for (let attempt = 1; attempt <= MAX_SPAWN_ATTEMPTS; attempt++) {
+      const started = await this._spawnOnce(attempt);
+      if (started) return;
+      if (attempt < MAX_SPAWN_ATTEMPTS) {
+        console.warn(
+          `[ArecordAudioSource] retrying in ${RETRY_DELAY_MS}ms (attempt ${attempt + 1}/${MAX_SPAWN_ATTEMPTS})...`
+        );
+        await new Promise((resolve) => setTimeout(resolve, RETRY_DELAY_MS));
+      }
     }
+    console.warn(`[ArecordAudioSource] gave up after ${MAX_SPAWN_ATTEMPTS} attempts - audio will read as unavailable`);
+    this.available = false;
+  }
 
-    this.proc.on('error', (err) => {
-      console.warn('[ArecordAudioSource] arecord process error:', err.message);
-      this.available = false;
-    });
-    this.proc.on('exit', () => {
-      this.available = false;
-    });
-    this.proc.stderr.on('data', () => {}); // swallow arecord's own logging
-    this.proc.stdout.on('data', (chunk) => this._ingest(chunk));
+  // Spawns arecord once and resolves true only if it's still alive after
+  // STARTUP_GRACE_MS - an immediate exit (bad device, transient hiccup)
+  // resolves false so init() can retry instead of latching "no mic" in
+  // permanently from a single fast failure.
+  _spawnOnce(attempt) {
+    return new Promise((resolve) => {
+      const args = ['-f', 'S16_LE', '-r', String(SAMPLE_RATE), '-c', '1', '-t', 'raw'];
+      if (this.device) args.unshift('-D', this.device);
 
-    this.available = true; // optimistic; the listeners above flip this
-    // false asynchronously if arecord isn't actually usable (missing
-    // binary, no device) — give that a moment to happen before we report
-    // ourselves ready.
-    await new Promise((resolve) => setTimeout(resolve, STARTUP_GRACE_MS));
+      let proc;
+      try {
+        proc = spawn('arecord', args, { stdio: ['ignore', 'pipe', 'pipe'] });
+      } catch (err) {
+        console.warn(`[ArecordAudioSource] failed to spawn arecord (attempt ${attempt}):`, err.message);
+        resolve(false);
+        return;
+      }
+
+      let exitedEarly = false;
+      proc.on('error', (err) => {
+        console.warn(`[ArecordAudioSource] arecord process error (attempt ${attempt}):`, err.message);
+        exitedEarly = true;
+        this.available = false;
+      });
+      proc.on('exit', (code, signal) => {
+        console.warn(`[ArecordAudioSource] arecord exited (attempt ${attempt}, code=${code} signal=${signal})`);
+        exitedEarly = true;
+        this.available = false;
+      });
+      // Surfaced, not swallowed: this is exactly where "wrong/missing
+      // device" (e.g. "No such file or directory", "Device or resource
+      // busy") shows up - silently discarding it was a real diagnostic
+      // dead end for anyone trying to tell "not receiving audio" apart
+      // from "arecord never started at all".
+      proc.stderr.on('data', (chunk) => {
+        console.warn(`[ArecordAudioSource] arecord: ${chunk.toString().trim()}`);
+      });
+      proc.stdout.on('data', (chunk) => this._ingest(chunk));
+
+      setTimeout(() => {
+        if (exitedEarly) {
+          resolve(false);
+          return;
+        }
+        this.proc = proc;
+        this.available = true;
+        resolve(true);
+      }, STARTUP_GRACE_MS);
+    });
   }
 
   _ingest(chunk) {

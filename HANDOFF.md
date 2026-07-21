@@ -1,95 +1,98 @@
-# Handoff note — 2026-07-20 (morning, updated)
+# Handoff note — 2026-07-21
 
 Scratch note for picking this session back up. Not part of the permanent
 docs set (CLAUDE.md / VFX_API.md remain authoritative) — delete this file
 once its contents are stale.
 
-## Status: root cause found — a real leak, in our own code, now fixed
+## Status: USB mic wired up, audio-reactive pieces confirmed working end to end
 
-After landing two defensive fixes (never crash on dispose, never get
-stuck forever on a wedged module — see below, both still correct and
-still worth keeping), Jim asked to write up the underlying allocation
-bug for a possible upstream bug report. Digging in to write that report
-accurately surfaced the actual root cause, and **it's ours, not
-QuickJS's or quickjs-emscripten's**:
+Jim attached a USB microphone (Logitech BRIO webcam's mic) to the Pi and
+wasn't sure it was actually reaching the render daemon. Built a small
+debug tool for exactly this (`effects/mic_check.js`, deliberately **not**
+added to `index.json`/`playlist.json` — it's a diagnostic, not a library
+piece): panel stays black under silence, shows a dim red square if
+`input.audio.ok` is false (sampler has no signal path at all), otherwise
+draws bass/mid/treble bars + an overall level bar + a beat blip.
 
-`host/runtime/vfxRuntime.js`'s `renderFrame()` called
-`this.context.getArrayBuffer(bufferHandle)`, which returns a `Lifetime`
-wrapping a *native* `_malloc`'d buffer (documented, intentional API
-design in `quickjs-emscripten-core` — the disposer callback is exactly
-`() => this.module._free(ptr)`). The old code destructured `{ value }`
-out of that Lifetime and discarded the Lifetime object itself, **never
-calling `.dispose()`** — so the underlying `_free(ptr)` never ran.
-Every single `renderFrame()` call leaked exactly one 12,288-byte buffer
-(64×64×3, the RGB framebuffer) natively, forever, for the life of the
-shared WASM module.
+Chased a real, non-obvious bug to ground, three layers deep:
 
-**Confirmed with an A/B RSS test** (identical code, only difference is
-calling `.dispose()` on the Lifetime after copying its bytes out):
-buggy version grew ~12MB per 1,000 frames (~12KB/frame, matching the
-framebuffer size almost exactly); fixed version stayed flat across
-8,000 frames. This single leak explains everything observed across both
-incidents — the original OOM ("Couldn't allocate memory to get
-ArrayBuffer" — the *next* `_malloc` finally failing once ~1.9GB of
-never-freed buffers had accumulated over ~90 minutes at 30fps), and
-this morning's permanently-wedged module (once the module's WASM linear
-memory is saturated with unfreeable garbage, nothing can allocate in it
-again, including a fresh runtime).
+1. **No `-D` device flag at all** — `host/input/audioArecord.js` never
+   told `arecord` which ALSA device to use, relying on the "default"
+   device, which doesn't reliably exist/match a USB mic added after
+   boot. Fixed: added a `--audio-device` CLI flag (`daemon.js` →
+   `createInputSampler` → `ArecordAudioSource`), e.g.
+   `--audio-device plughw:CARD=BRIO,DEV=0`.
+2. **arecord's stderr was silently swallowed** — a real diagnostic dead
+   end; every error message that would have explained the failures below
+   was being thrown away. Fixed: now logged with an `[ArecordAudioSource]
+   arecord: ...` prefix, plus exit code/signal on process exit.
+3. **The real root cause**: `rpi-led-matrix` (the real `MatrixDisplay`
+   backend) drops the whole Node process from root down to the
+   low-privilege `daemon` Linux system user right after GPIO init - the
+   same mechanism that caused the earlier wall-label `run/` permission
+   bug. `daemon.js`'s `main()` called `display.init()` **before**
+   `sampler.init()`, so by the time `arecord` was spawned, the process
+   (and everything it spawns) was running as `daemon`, which has zero
+   permission on `/dev/snd/*` (confirmed: `id daemon` → only group is
+   `daemon`, not `audio`; every `/dev/snd/*` node is `root:audio
+   crw-rw----`). Adding `daemon` to the `audio` group (`sudo usermod -aG
+   audio daemon`) did **not** fix it - the privilege-drop doesn't refresh
+   supplementary groups, so newly-added group membership never takes
+   effect for that demoted process. **Actual fix**: reordered
+   `daemon.js`'s `main()` to call `sampler.init()` (which spawns
+   `arecord`) *before* `display.init()`, while the process is still
+   root - a spawned child process keeps the privilege level it had at
+   fork time regardless of what the parent does to its own privileges
+   afterward. Confirmed working on real hardware after this reorder.
 
-**Fixed** in `host/runtime/vfxRuntime.js`: `renderFrame()` now disposes
-the `Lifetime` returned by `getArrayBuffer()` right after copying its
-bytes into the defensive `Uint8Array` copy it already made. Verified
-against the exact production code path: 8,000 frames of the real
-`while-touching.js`, RSS flat (67.5MB → 64.6MB, noise-level) versus the
-old code's confirmed linear growth. **Not yet committed.**
+All of this was found the hard way (real hardware, real error messages,
+each fix tested and ruled in/out one layer at a time) - see the
+conversation history for the full diagnostic trail if the compressed
+version above raises questions later.
 
-**No upstream bug report needed** — `quickjs-emscripten`'s API worked
-exactly as designed (manual-lifetime-management, same pattern used
-correctly everywhere else in this file); this was a missed `.dispose()`
-call on our side, plain and simple.
+**Uncommitted at time of writing**: `host/daemon.js` (the reorder),
+`host/input/audioArecord.js` (device flag + retry-on-fast-failure +
+stderr logging), `host/input/index.js` (threads `audioDevice` through),
+`effects/mic_check.js` (new debug tool, not wired into the library).
+Get Jim's go-ahead before committing, same as always.
 
-### The two earlier defensive fixes are still worth keeping
-
-Both already committed (`8ec6116`, `b5fa9b6`), and both remain correct
-general daemon robustness even though they weren't the actual root
-cause of this particular leak:
-- `host/daemon.js`: never let a bad `dispose()` or a bad frame take the
-  whole process down.
-- `host/runtime/vfxRuntime.js`: never get stuck retrying a permanently
-  wedged shared module forever — discard and rebuild it.
-
-Neither is *wrong* to have — a future genuine OOM (a truly leaky effect
-script, or just very long uptime) could still hit similar failure
-shapes, and these two fixes mean the daemon degrades gracefully instead
-of dying or freezing. But they were treating the symptom; this session
-found and fixed the actual disease.
+Also worth noting for later: `ArecordAudioSource.init()` now retries up
+to 4 times on a fast failure, on the theory the failure might have been
+a transient startup race - it wasn't (this was the deterministic
+privilege issue above, and retries alone never fixed it), but the retry
+logic is still harmless/reasonable defense-in-depth for a genuinely
+transient hiccup in the future, so it was left in rather than reverted.
 
 ## What's left
 
-- **Get Jim's go-ahead, then commit** the `renderFrame()` leak fix.
-- **Restart the real-hardware daemon** once committed.
-- Worth a quick audit (not yet done): are there other places in this
-  codebase (validation harness, preview rendering) that call
-  `getArrayBuffer` or similarly return a `Lifetime`-wrapping API and
-  might have the same missed-dispose mistake? A repo-wide grep for
-  `getArrayBuffer` found only this one real call site (there's also a
-  scratch test file, since deleted) — but worth a broader look at other
-  Lifetime-returning APIs (`newArray`, `getProp`, etc.) if time allows,
-  since this bug class (destructure-and-drop the wrapper) could recur
-  anywhere a `Lifetime` is unwrapped this way.
+- **Get Jim's go-ahead, then commit** the four files above.
+- The retune note already in `audioArecord.js`'s file header (scale
+  factors for level/bass/mid/treble/beat were heuristic, untested
+  against real hardware) is now actually testable — worth revisiting
+  once Jim's had a chance to react to `mic_check.js` with real sound and
+  see whether the bars/beat detection feel right, or need retuning.
+- Unrelated, sitting uncommitted in the working tree from agent runs
+  (not touched this session, not evaluated): `effects/isobars.js`,
+  `effects/lengths.js`, `effects/murmuration.js`, `effects/sympathetic.js`,
+  `effects/the-sources-are-elsewhere.js` and their preview GIFs, plus the
+  `index.json`/`effects/playlist.json`/knowledge-dossier updates that go
+  with them.
 - The timer is still not enabled (deliberate, per Jim's earlier call).
 - The render daemon's own systemd unit — still not built.
 - The wall-label server's own systemd unit — still not built.
-- The weekly review session (naming/ratification) — still doesn't exist;
-  three pieces in now, still short of `naming.md`'s thresholds.
+- The weekly review session (naming/ratification) — still doesn't exist.
 - `meta.pacing = 'hour'` — still deferred from a prior session.
 - CLAUDE.md's small Pi-deploy-notes inaccuracies — still not folded in,
-  still low priority.
+  still low priority. Worth folding in THIS session's finding too at
+  some point: the deploy notes already mention GPIO/PWM quirks but not
+  the root→daemon privilege drop's effect on subprocess permissions in
+  general (audio was the second symptom of it; file-write was the
+  first) - a general "spawn anything needing elevated permissions before
+  display.init()" note could save a future session real time.
 
 ## Blockers
 
-None code-side. The real daemon is presumably still stuck in the retry
-loop from this morning until Jim restarts it with this fix in place.
+None. Audio confirmed working on real hardware as of this session.
 
 ## Other context
 

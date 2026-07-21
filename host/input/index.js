@@ -14,10 +14,10 @@ const { ArecordAudioSource } = require('./audioArecord');
 const { ButtonState } = require('./button');
 
 class InputSampler {
-  constructor({ lat, lon, audioSource = 'synthetic' } = {}) {
+  constructor({ lat, lon, audioSource = 'synthetic', audioDevice } = {}) {
     this.lat = lat;
     this.lon = lon;
-    this.audio = audioSource === 'arecord' ? new ArecordAudioSource() : new SyntheticAudioSource();
+    this.audio = audioSource === 'arecord' ? new ArecordAudioSource(audioDevice) : new SyntheticAudioSource();
     this.env = new EnvSampler({ lat, lon });
     this.button = new ButtonState();
   }
