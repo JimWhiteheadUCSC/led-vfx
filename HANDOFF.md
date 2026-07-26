@@ -1,98 +1,146 @@
-# Handoff note — 2026-07-21
+# Handoff note — 2026-07-21 (later)
 
 Scratch note for picking this session back up. Not part of the permanent
 docs set (CLAUDE.md / VFX_API.md remain authoritative) — delete this file
 once its contents are stale.
 
-## Status: USB mic wired up, audio-reactive pieces confirmed working end to end
+## Status: validator collapse-detection feature built, tested, tuned — NOT yet committed
 
-Jim attached a USB microphone (Logitech BRIO webcam's mic) to the Pi and
-wasn't sure it was actually reaching the render daemon. Built a small
-debug tool for exactly this (`effects/mic_check.js`, deliberately **not**
-added to `index.json`/`playlist.json` — it's a diagnostic, not a library
-piece): panel stays black under silence, shows a dim red square if
-`input.audio.ok` is false (sampler has no signal path at all), otherwise
-draws bass/mid/treble bars + an overall level bar + a beat blip.
+Jim's reaction to two agent-authored pieces (`murmuration.js` merging
+into one flock and piling against an edge; `desire-paths.js` converging
+into overlapping central blobs) drove a full extension of the validation
+harness, per a plan approved via plan mode. Built, all in `validate/` +
+`agent/`:
 
-Chased a real, non-obvious bug to ground, three layers deep:
+- **Streaming, windowed metrics** (`validate/metrics.js`): no more
+  buffering a whole run's frames — a run now streams through per-15s-
+  window accumulators. Two new per-pixel statistics: `spread`
+  (luminance-weighted standard distance from centroid — collapses toward
+  0 as content gathers into one clump) and `edgeMass` (fraction of
+  luminance near the border). Both weight by the SQUARE of
+  luminance/delta (matches this codebase's existing v*v idiom), added
+  after real testing showed linear weighting missed a real case.
+- **Extended, adaptive horizon** (`validate/index.js`): default
+  `MAX_SIM_SECONDS=240` (4 simulated minutes, env-overridable via
+  `VALIDATE_MAX_SIM_SECONDS`), with early-stop once consecutive windows'
+  metrics converge (never before 120s — desire-paths' own documented
+  settle time). Chosen conservative per Jim's explicit decision, given
+  this validator runs on the Pi itself hourly and this project has
+  already been burned once by dev-machine timing not holding on real Pi
+  hardware. **Not yet benchmarked on the real Pi** — ask Jim to run
+  `time node validate/index.js effects/murmuration.js` there before
+  trusting this inside the live hourly agent path; raise the cap only
+  after that comes back comfortable.
+- **New ratio-based gates** (`validate/collapseGates.js`): compares
+  early (first 30s) vs. late (last 30s of whatever the run reached)
+  windows. Thresholds are empirically calibrated against a real
+  `node validate/index.js --all` sweep of the entire library (13
+  pieces), not guessed — every genuine piece measured spread/motion-
+  spread ratios of 0.94-1.16; murmuration.js (a real, user-confirmed
+  collapse) measured 0.49-0.82 across different random seeds (its
+  `setup()` isn't RNG-seeded). `COLLAPSE_SPREAD_RATIO`/
+  `MOTION_COLLAPSE_RATIO` are set to 0.85 — comfortably below every real
+  piece's floor, comfortably above murmuration's worst-observed-luck run.
+  **Confirmed working**: `node validate/index.js effects/murmuration.js`
+  now reliably FAILs with data-driven messages ("spread fell from 12.9px
+  to 8.1px, 62% of its early value"); `koi_pond.js` (the tightest real
+  "healthy" case at 0.94-1.01) still cleanly PASSes.
+- **Epoch contact sheets** (`validate/preview.js`'s `writeContactSheet`,
+  `validate/epochs.js`'s shared `EPOCHS` list): replaced the old flat
+  N-evenly-spaced single-frame stills with 3x3 grids of near-frames
+  (~0.7s apart) at t≈10s/1m/3m/8m, so motion reads within a single
+  still image. Renamed throughout: `stillPaths`→`contactSheetPaths`,
+  `.still-N.gif`→`.epoch-<label>.gif`, `STILL_COUNT` removed (now
+  derived from `EPOCHS.length`). Backfilled successfully for all 8
+  archived pieces (`node -e "require('./agent/archive').gatherArchive()"`
+  already run once by hand, confirmed on disk) — epochs beyond the
+  240s cap correctly show as `null`/"not reached", not an error. All 15
+  stale old-style `.still-N.gif` files (5 pieces outside the recency
+  window, never touched by the lazy per-piece cleanup) deleted by hand.
 
-1. **No `-D` device flag at all** — `host/input/audioArecord.js` never
-   told `arecord` which ALSA device to use, relying on the "default"
-   device, which doesn't reliably exist/match a USB mic added after
-   boot. Fixed: added a `--audio-device` CLI flag (`daemon.js` →
-   `createInputSampler` → `ArecordAudioSource`), e.g.
-   `--audio-device plughw:CARD=BRIO,DEV=0`.
-2. **arecord's stderr was silently swallowed** — a real diagnostic dead
-   end; every error message that would have explained the failures below
-   was being thrown away. Fixed: now logged with an `[ArecordAudioSource]
-   arecord: ...` prefix, plus exit code/signal on process exit.
-3. **The real root cause**: `rpi-led-matrix` (the real `MatrixDisplay`
-   backend) drops the whole Node process from root down to the
-   low-privilege `daemon` Linux system user right after GPIO init - the
-   same mechanism that caused the earlier wall-label `run/` permission
-   bug. `daemon.js`'s `main()` called `display.init()` **before**
-   `sampler.init()`, so by the time `arecord` was spawned, the process
-   (and everything it spawns) was running as `daemon`, which has zero
-   permission on `/dev/snd/*` (confirmed: `id daemon` → only group is
-   `daemon`, not `audio`; every `/dev/snd/*` node is `root:audio
-   crw-rw----`). Adding `daemon` to the `audio` group (`sudo usermod -aG
-   audio daemon`) did **not** fix it - the privilege-drop doesn't refresh
-   supplementary groups, so newly-added group membership never takes
-   effect for that demoted process. **Actual fix**: reordered
-   `daemon.js`'s `main()` to call `sampler.init()` (which spawns
-   `arecord`) *before* `display.init()`, while the process is still
-   root - a spawned child process keeps the privilege level it had at
-   fork time regardless of what the parent does to its own privileges
-   afterward. Confirmed working on real hardware after this reorder.
+### Important honest finding: the gates don't catch everything, by design
 
-All of this was found the hard way (real hardware, real error messages,
-each fix tested and ruled in/out one layer at a time) - see the
-conversation history for the full diagnostic trail if the compressed
-version above raises questions later.
+The numeric gates reliably catch murmuration's failure shape (spatial
+collapse) but **do not** reliably catch desire-paths' failure shape
+(a small, permanently-fixed set of waypoints re-walked forever — its
+slow-decaying "worn path" layer keeps overall spread looking constant
+regardless of whether the walkers' own positions have gone stale). Tried
+three metric variants (linear spread, linear motion-weighted spread,
+squared motion-weighted spread) — none caught it. Rather than keep
+chasing thresholds and risk overfitting to two examples, this is
+documented honestly in `validate/metrics.js`'s comments and in
+`knowledge/craft/attractors.md` (see below) as a real, structural
+limitation: this specific failure shape needs the epoch contact
+sheets / the agent's own eyes, not a numeric threshold. "Metrics catch
+collapse; they can't catch boring."
 
-**Uncommitted at time of writing**: `host/daemon.js` (the reorder),
-`host/input/audioArecord.js` (device flag + retry-on-fast-failure +
-stderr logging), `host/input/index.js` (threads `audioDevice` through),
-`effects/mic_check.js` (new debug tool, not wired into the library).
-Get Jim's go-ahead before committing, same as always.
+### Knowledge base: extended an existing file, didn't create a duplicate
 
-Also worth noting for later: `ArecordAudioSource.init()` now retries up
-to 4 times on a fast failure, on the theory the failure might have been
-a transient startup race - it wasn't (this was the deterministic
-privilege issue above, and retries alone never fixed it), but the retry
-logic is still harmless/reasonable defense-in-depth for a genuinely
-transient hiccup in the future, so it was left in rather than reverted.
+Went looking to add a new `knowledge/craft/closed-vs-forced-systems.md`
+per the original plan, and found `knowledge/craft/attractors.md`
+**already existed**, uncommitted, from a separate/concurrent agent
+session — and it already articulated almost exactly the intended lesson,
+in the project's own voice, even pre-referencing "the validator's
+windowed gates" and "late-epoch contact sheets" that didn't exist yet.
+Extended that file instead of duplicating it: added an "Evidence
+(in-repo)" section quoting `knowledge/artists/casey-reas.md`'s real
+Desire Paths attempt note (which measured the exact settle-by-2min
+behavior but framed only the accumulator's equilibrium as a success,
+never flagging the walkers' own position collapse as a problem — its own
+"candidate next steps" already named the fix, a waypoint-relocation
+timer, without applying it), plus an honest caveat section on what the
+mechanical gates can and can't catch.
+
+### Docs updated
+
+`CLAUDE.md`'s validation-harness paragraph and `docs/VFX_API.md`'s
+Aesthetic guidance section both rewritten to describe the new adaptive
+windowed horizon and point at `knowledge/craft/attractors.md`.
+
+### Pulled from rotation, not deleted
+
+`murmuration.js` and `desire-paths.js` removed from
+`effects/playlist.json` only — still in `index.json` and on disk, so the
+agent keeps studying them (now alongside the craft doc explaining what
+went wrong) without the live panel keeping showing the known collapse.
 
 ## What's left
 
-- **Get Jim's go-ahead, then commit** the four files above.
-- The retune note already in `audioArecord.js`'s file header (scale
-  factors for level/bass/mid/treble/beat were heuristic, untested
-  against real hardware) is now actually testable — worth revisiting
-  once Jim's had a chance to react to `mic_check.js` with real sound and
-  see whether the bars/beat detection feel right, or need retuning.
-- Unrelated, sitting uncommitted in the working tree from agent runs
-  (not touched this session, not evaluated): `effects/isobars.js`,
-  `effects/lengths.js`, `effects/murmuration.js`, `effects/sympathetic.js`,
-  `effects/the-sources-are-elsewhere.js` and their preview GIFs, plus the
-  `index.json`/`effects/playlist.json`/knowledge-dossier updates that go
-  with them.
-- The timer is still not enabled (deliberate, per Jim's earlier call).
-- The render daemon's own systemd unit — still not built.
-- The wall-label server's own systemd unit — still not built.
-- The weekly review session (naming/ratification) — still doesn't exist.
-- `meta.pacing = 'hour'` — still deferred from a prior session.
-- CLAUDE.md's small Pi-deploy-notes inaccuracies — still not folded in,
-  still low priority. Worth folding in THIS session's finding too at
-  some point: the deploy notes already mention GPIO/PWM quirks but not
-  the root→daemon privilege drop's effect on subprocess permissions in
-  general (audio was the second symptom of it; file-write was the
-  first) - a general "spawn anything needing elevated permissions before
-  display.init()" note could save a future session real time.
+- **Get Jim's go-ahead, then commit** — see "Uncommitted work" below,
+  this needs an explicit conversation about how to split it, not a
+  blind `git add`.
+- **Ask Jim to benchmark real Pi timing** (see above) before trusting
+  `MAX_SIM_SECONDS=240` inside the live hourly agent path — this
+  session's testing was all done on the dev machine.
+- Consider whether `SETTLES_TEMPORAL_RATIO`/`EDGE_MASS_POOL_THRESHOLD`
+  (unchanged from their original guessed values — only the two spread
+  ratios got empirically retuned this session) need the same real-sweep
+  treatment once more pieces exist to calibrate against.
+- Desire-paths' failure shape is still uncaught mechanically — worth
+  watching whether a future piece exhibits the same "fixed small
+  repertoire" pattern and whether the contact-sheet mechanism actually
+  catches it in practice (this session couldn't test that, since it
+  requires the agent's own vision, not a headless script).
 
 ## Blockers
 
-None. Audio confirmed working on real hardware as of this session.
+None code-side. Needs Jim's review before committing (see below) and,
+separately, a real Pi timing benchmark before this is fully trusted live.
+
+## Uncommitted work — genuinely tangled, needs a conversation before committing
+
+The working tree currently mixes THIS session's validator work with what
+appears to be a separate, unrelated concurrent agent session's output:
+new pieces (`isobars.js`, `lengths.js`, `sympathetic.js`,
+`the-sources-are-elsewhere.js`, plus `murmuration.js`/`desire-paths.js`
+themselves), their own `index.json`/`effects/playlist.json`/knowledge-
+dossier entries, and `knowledge/craft/attractors.md` itself (mostly
+theirs, this session only added two sections to it). `effects/
+playlist.json`'s diff in particular has BOTH sessions' changes
+interleaved in one file — cannot be cleanly split by `git add -p`
+without care. Do not commit blindly; walk through `git status`/`git
+diff` with Jim first and confirm which files belong to which piece of
+work before staging anything.
 
 ## Other context
 

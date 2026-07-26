@@ -291,3 +291,12 @@ harder to read for no measured benefit.
 - Constrained palettes (2–3 related hues) look intentional; full
   rainbow cycling is the "default settings" look — use it knowingly
   or not at all.
+- The ~30-second horizon above is about not repeating outright — a
+  longer-run trap is more insidious: a system governed purely by
+  internal interaction rules (boids, seek-toward-a-fixed-point,
+  diffusion) mathematically settles toward an attractor given enough
+  time, unless something keeps feeding it genuinely new input (e.g.
+  `noise2(x, y, t)` sampled at an ever-advancing `t`, or audio
+  reactivity) — the validation harness now simulates minutes, not
+  seconds, specifically to catch this. See
+  `knowledge/craft/attractors.md`.

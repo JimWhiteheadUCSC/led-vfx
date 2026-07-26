@@ -54,14 +54,27 @@ Two loops sharing a library:
    replaying a library piece. Agent may append lessons to the knowledge
    base.
 
-Validation harness (headless): run ~300 frames; check no exceptions,
-frame time within budget, liveliness metrics (temporal variance, mean
-brightness, spatial entropy — not frozen/black/flat); exercise declared
-inputs with synthesized streams (recorded audio, scripted button
-presses, time-warped clock sweeping a day in seconds) AND with all
-inputs neutral (graceful-degradation check); verify frontmatter parses,
-UUID present, lineage refs resolve; render a preview GIF stored beside
-the piece.
+Validation harness (headless): the neutral pass streams frames through
+per-15-second-window metrics (temporal variance, mean brightness,
+spatial contrast — not frozen/black/flat, same three as before) for up
+to `VALIDATE_MAX_SIM_SECONDS` simulated seconds (240 by default —
+conservative given this runs on the Pi itself hourly; raise only after
+benchmarking real Pi timing), stopping early once consecutive windows'
+metrics have converged. Comparing early windows against late windows
+catches pieces that look alive at first but mathematically settle into a
+fixed attractor before the run ends — a merged flock piling against an
+edge, particles converging into a static clump — which a single
+whole-run average can't see (see
+`knowledge/craft/attractors.md`); failures are data-driven
+("spread fell from 19px to 6px between minute one and minute four"), not
+just a verdict. The exception-checking synthesized-input pass (recorded
+audio, scripted button presses, time-warped clock) and the neutral-input
+graceful-degradation check both stay at the original short/fixed length —
+only the neutral pass's liveliness/collapse horizon was extended. Also
+verifies frontmatter parses, UUID present, lineage refs resolve; renders
+a short preview GIF stored beside the piece, plus a handful of "contact
+sheet" stills (3x3 grids of near-frames, one per simulated-time epoch)
+for the creativity agent's own vision to judge what numeric gates can't.
 
 ## Platform strategy
 

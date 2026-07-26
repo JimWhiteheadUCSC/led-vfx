@@ -11,6 +11,7 @@ const fs = require('fs');
 const config = require('./config');
 const { VFX_API_PATH, PRELUDE_PATH } = config;
 const { readKnowledgeBaseText } = require('./knowledge');
+const { EPOCHS } = require('../validate/epochs');
 
 function readContractText() {
   const vfxApi = fs.readFileSync(VFX_API_PATH, 'utf8');
@@ -45,9 +46,23 @@ function pieceContentBlocks(piece) {
     `Source (${piece.relPath}):\n${piece.source}`;
 
   const blocks = [{ type: 'text', text: header }];
-  for (const stillPath of piece.stillPaths) {
-    blocks.push(imageBlockFromGif(stillPath));
-  }
+  piece.contactSheetPaths.forEach((sheetPath, i) => {
+    const epoch = EPOCHS[i];
+    if (sheetPath) {
+      blocks.push({
+        type: 'text',
+        text: `[t≈${epoch.label}: a 3x3 grid of frames ~0.7s apart, showing motion at this point in the run]`,
+      });
+      blocks.push(imageBlockFromGif(sheetPath));
+    } else {
+      blocks.push({
+        type: 'text',
+        text:
+          `[t≈${epoch.label}: not reached - this piece found a stable attractor, or the run hit ` +
+          `the validator's simulated-time cap, before this epoch]`,
+      });
+    }
+  });
   return blocks;
 }
 
@@ -63,10 +78,15 @@ function buildPrompt({ archive, issuedUuid, maxAttempts = config.MAX_ATTEMPTS })
     type: 'text',
     text:
       `Here is the recent archive of pieces you (or a prior instance of you) have made - ` +
-      `${archive.length} piece(s), most recent first. Each includes its full source and ` +
-      `${archive[0] ? archive[0].stillPaths.length : 0} still frames sampled across its run ` +
-      `(not an animated preview - your vision only ever sees a still's single frame anyway, ` +
-      `so these are real distinct moments, not one frozen instant).`,
+      `${archive.length} piece(s), most recent first. Each includes its full source and, for ` +
+      `a handful of simulated-time epochs (t≈10s/1m/3m/8m into the run), a contact sheet: a ` +
+      `3x3 grid of frames sampled ~0.7s apart composited into one image, so motion reads across ` +
+      `the panels (your vision only ever sees a still's single frame, so one frame per epoch ` +
+      `would be motion-blind). An epoch marked "not reached" means the piece found a stable ` +
+      `attractor, or the validator hit its simulated-time cap, before then. Look across a ` +
+      `piece's epochs for whether it's still finding new configurations by its later ones, or ` +
+      `has settled into repeating the same handful of shapes - see ` +
+      `knowledge/craft/attractors.md for why that distinction matters.`,
   };
 
   const archiveBlocks = archive.flatMap(pieceContentBlocks);

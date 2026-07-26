@@ -43,6 +43,11 @@ const BRIGHTNESS_WARN_LOW = 5;
 const BRIGHTNESS_WARN_HIGH = 200;
 const CONTRAST_WARN = 6;
 
+// Width of the border ring "edge-mass" (below) treats as "against the
+// wall" — see validate/collapseGates.js for why this needs to sit well
+// above this ring's own geometric share of the panel's area.
+const EDGE_BAND_PX = 6;
+
 function meanAbsDiff(a, b) {
   let sum = 0;
   for (let i = 0; i < a.length; i++) sum += Math.abs(a[i] - b[i]);
@@ -59,6 +64,202 @@ function frameStdDev(frame) {
     sq += d * d;
   }
   return Math.sqrt(sq / frame.length);
+}
+
+// Per-frame stats for the streaming/windowed collapse gates (see
+// validate/collapseGates.js), computed in one pixel pass so a long run
+// (minutes, not the old 10s) never needs a second pass over stored frames.
+// `prevFrame` is null for a run's very first frame (or right after a
+// runtime reload) - temporal is null in that case, not 0, so callers don't
+// silently count a missing comparison as "no change".
+//
+// Luminance here is a plain per-pixel channel average (r+g+b)/3, not a
+// perceptual weighting - this is an internal collapse/spread signal, not
+// a display value, so the extra complexity of real luminance weights
+// buys nothing.
+//
+// spread: luminance-weighted standard distance from the frame's own
+// luminance centroid, via the parallel-axis trick (sumLx2/sumL - cx²) so
+// the centroid and spread come out of the same single pass. Collapses
+// toward 0 as content gathers into one knot/clump - the same number
+// catches both a merged flock and a converged central blob, since both
+// are "distributed brightness got less distributed", not two different
+// failure shapes needing two different detectors.
+//
+// edgeMass: fraction of total luminance within `edgeBandPx` of the panel
+// border. For a 64x64 panel and the default 6px band, that ring is
+// (4096 - 52*52)/4096 ≈ 0.34 of pixel *area* - so a meaningful "pooling
+// at the boundary" gate threshold must sit well above 0.34 (uniform
+// brightness alone would already read ~0.34), not near it.
+//
+// motionSpread: the SAME standard-distance-from-centroid computation as
+// spread, but weighted by per-pixel frame-to-frame CHANGE instead of raw
+// luminance. Both weights are SQUARED (L*L, D*D), not linear - the same
+// perceptual-curve idiom this codebase already uses for display (v*v) -
+// so a few genuinely bright/active pixels dominate the average over many
+// faintly-changing ones.
+//
+// Both spread and motionSpread reliably catch murmuration.js's failure
+// (spatial collapse - many flocks merging into one: spreadRatio/
+// motionSpreadRatio both fall well below 1 as the birds consolidate,
+// confirmed against real measured runs). Neither reliably catches
+// desire-paths.js's failure, tried with both linear and squared weights:
+// its walkers fly in from random start positions to a small FIXED set of
+// waypoints within the first ~30s, and after that transient, position/
+// motion spread simply stays constant (ratio ~1.0) - because the failure
+// there isn't a late collapse in space, it's an early arrival at a small
+// fixed repertoire that then repeats unchanged for the rest of the run.
+// That's a real, different failure shape (bounded novelty over time, not
+// spatial concentration) that these two spatial statistics structurally
+// can't see - it needs the complementary mechanism this project already
+// has for exactly this gap: the creativity agent's own eyes, via the
+// epoch contact sheets (see validate/preview.js's writeContactSheet) -
+// "metrics catch collapse; they can't catch boring." See
+// knowledge/craft/attractors.md for the fuller writeup.
+function frameStats(frame, prevFrame, width, height, edgeBandPx) {
+  const n = frame.length;
+  let byteSum = 0;
+  let byteSumSq = 0;
+  let sumL = 0;
+  let sumLx = 0;
+  let sumLy = 0;
+  let sumLx2 = 0;
+  let sumLy2 = 0;
+  let edgeL = 0;
+  let sumAbsDelta = 0;
+  let sumD = 0;
+  let sumDx = 0;
+  let sumDy = 0;
+  let sumDx2 = 0;
+  let sumDy2 = 0;
+  const hasPrev = !!prevFrame;
+
+  for (let y = 0; y < height; y++) {
+    const nearEdgeY = y < edgeBandPx || y >= height - edgeBandPx;
+    for (let x = 0; x < width; x++) {
+      const idx = (y * width + x) * 3;
+      const r = frame[idx];
+      const g = frame[idx + 1];
+      const b = frame[idx + 2];
+      byteSum += r + g + b;
+      byteSumSq += r * r + g * g + b * b;
+      const L = (r + g + b) / 3;
+      const Lw = L * L; // squared weight - see the function doc comment
+      sumL += Lw;
+      sumLx += Lw * x;
+      sumLy += Lw * y;
+      sumLx2 += Lw * x * x;
+      sumLy2 += Lw * y * y;
+      if (nearEdgeY || x < edgeBandPx || x >= width - edgeBandPx) edgeL += Lw;
+
+      if (hasPrev) {
+        const dr = Math.abs(r - prevFrame[idx]);
+        const dg = Math.abs(g - prevFrame[idx + 1]);
+        const db = Math.abs(b - prevFrame[idx + 2]);
+        sumAbsDelta += dr + dg + db;
+        const D = (dr + dg + db) / 3;
+        const Dw = D * D; // squared weight - see the function doc comment
+        sumD += Dw;
+        sumDx += Dw * x;
+        sumDy += Dw * y;
+        sumDx2 += Dw * x * x;
+        sumDy2 += Dw * y * y;
+      }
+    }
+  }
+
+  const meanByte = byteSum / n;
+  const stdDev = Math.sqrt(Math.max(0, byteSumSq / n - meanByte * meanByte));
+
+  let spread = 0;
+  let edgeMass = 0;
+  if (sumL > 1e-6) {
+    const cx = sumLx / sumL;
+    const cy = sumLy / sumL;
+    const varX = Math.max(0, sumLx2 / sumL - cx * cx);
+    const varY = Math.max(0, sumLy2 / sumL - cy * cy);
+    spread = Math.sqrt(varX + varY);
+    edgeMass = edgeL / sumL;
+  }
+
+  let temporal = null;
+  let motionSpread = null;
+  if (hasPrev) {
+    temporal = sumAbsDelta / n; // same formula as meanAbsDiff(frame, prevFrame), computed inline
+    if (sumD > 1e-6) {
+      const mcx = sumDx / sumD;
+      const mcy = sumDy / sumD;
+      const mVarX = Math.max(0, sumDx2 / sumD - mcx * mcx);
+      const mVarY = Math.max(0, sumDy2 / sumD - mcy * mcy);
+      motionSpread = Math.sqrt(mVarX + mVarY);
+    } else {
+      motionSpread = 0; // literally nothing changed this frame
+    }
+  }
+
+  return {
+    n,
+    byteSum,
+    stdDev,
+    spread,
+    edgeMass,
+    temporal,
+    motionSpread,
+  };
+}
+
+// Accumulates frameStats() results and reduces them to the same shape
+// computeMetrics() below returns, plus the two new spatial statistics -
+// used twice per run: once per WINDOW_SECONDS window (reset each window,
+// feeds validate/collapseGates.js's early-vs-late comparison) and once
+// never-reset across the whole run (feeds evaluateLiveliness() below,
+// numerically equivalent to the old buffer-everything computeMetrics()
+// since it's the same formulas over the same data, just accumulated
+// incrementally instead of from a stored frames array).
+class WindowAccumulator {
+  constructor() {
+    this.frameCount = 0;
+    this.byteSum = 0;
+    this.byteCount = 0;
+    this.stdDevSum = 0;
+    this.spreadSum = 0;
+    this.edgeMassSum = 0;
+    this.temporalSum = 0;
+    this.temporalCount = 0;
+    this.motionSpreadSum = 0;
+    this.motionSpreadCount = 0;
+  }
+
+  add(stats) {
+    this.frameCount++;
+    this.byteSum += stats.byteSum;
+    this.byteCount += stats.n;
+    this.stdDevSum += stats.stdDev;
+    this.spreadSum += stats.spread;
+    this.edgeMassSum += stats.edgeMass;
+    if (stats.temporal !== null) {
+      this.temporalSum += stats.temporal;
+      this.temporalCount++;
+    }
+    if (stats.motionSpread !== null) {
+      this.motionSpreadSum += stats.motionSpread;
+      this.motionSpreadCount++;
+    }
+  }
+
+  finalize(startSeconds, endSeconds) {
+    return {
+      startSeconds,
+      endSeconds,
+      frameCount: this.frameCount,
+      temporalVariance: this.temporalCount > 0 ? this.temporalSum / this.temporalCount : 0,
+      meanBrightness: this.byteCount > 0 ? this.byteSum / this.byteCount : 0,
+      spatialContrast: this.frameCount > 0 ? this.stdDevSum / this.frameCount : 0,
+      spread: this.frameCount > 0 ? this.spreadSum / this.frameCount : 0,
+      edgeMass: this.frameCount > 0 ? this.edgeMassSum / this.frameCount : 0,
+      motionSpread: this.motionSpreadCount > 0 ? this.motionSpreadSum / this.motionSpreadCount : 0,
+    };
+  }
 }
 
 // frames: array of Uint8Array captured over a run. Returns the three raw
@@ -141,6 +342,8 @@ module.exports = {
   computeMetrics,
   evaluateLiveliness,
   evaluateFrameTiming,
+  frameStats,
+  WindowAccumulator,
   FRAME_BUDGET_MS,
   FRAME_BUDGET_GROSS_MULTIPLIER,
   OVERRUN_FRACTION_WARN,
@@ -150,4 +353,5 @@ module.exports = {
   BRIGHTNESS_WARN_LOW,
   BRIGHTNESS_WARN_HIGH,
   CONTRAST_WARN,
+  EDGE_BAND_PX,
 };

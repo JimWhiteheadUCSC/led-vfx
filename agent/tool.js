@@ -12,12 +12,13 @@ const { betaTool } = require('@anthropic-ai/sdk/helpers/beta/json-schema');
 const config = require('./config');
 const { EFFECTS_DIR } = config;
 const { validateProgram } = require('../validate');
-const { stillPathsFor } = require('./archive');
+const { contactSheetPathsFor } = require('./archive');
 
 // A scratch basename for this attempt's preview artifacts - never
 // actually written as a .js file itself (validateProgram only uses it
-// to derive where to write the .gif/.still-N.gif, it never writes source
-// to this path), so there's no risk of a stray placeholder effect file.
+// to derive where to write the .gif/.epoch-*.gif files, it never writes
+// source to this path), so there's no risk of a stray placeholder effect
+// file.
 function scratchPreviewBase(issuedUuid, attemptNumber) {
   return path.join(EFFECTS_DIR, `.attempt-${issuedUuid}-${attemptNumber}.js`);
 }
@@ -87,9 +88,9 @@ function createWriteEffectTool({ attempts, issuedUuid, maxAttempts = config.MAX_
       attempts.count += 1;
       const attemptNumber = attempts.count;
       const scratchBase = scratchPreviewBase(issuedUuid, attemptNumber);
-      const stillPaths = stillPathsFor(scratchBase);
+      const contactSheetPaths = contactSheetPathsFor(scratchBase);
 
-      const report = await validateProgram(source, { filePath: scratchBase, stillPaths });
+      const report = await validateProgram(source, { filePath: scratchBase, contactSheetPaths });
       attempts.history.push({
         attemptNumber,
         pass: report.pass,
@@ -99,7 +100,7 @@ function createWriteEffectTool({ attempts, issuedUuid, maxAttempts = config.MAX_
 
       if (!report.pass) {
         deleteIfExists(report.gifPath);
-        for (const p of report.stillPaths || []) deleteIfExists(p);
+        for (const p of report.contactSheetPaths || []) deleteIfExists(p);
 
         const remaining = maxAttempts - attempts.count;
         const errorList = report.errors.map((e) => `  - ${e}`).join('\n');
@@ -114,7 +115,7 @@ function createWriteEffectTool({ attempts, issuedUuid, maxAttempts = config.MAX_
         frontmatter: report.frontmatter,
         knowledgeUpdate: knowledgeUpdate || null,
         gifPath: report.gifPath,
-        stillPaths: report.stillPaths,
+        contactSheetPaths: report.contactSheetPaths,
       };
       return `PASSED validation on attempt ${attemptNumber}/${maxAttempts}. This piece will be committed to the library.`;
     },

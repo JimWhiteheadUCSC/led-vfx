@@ -13,6 +13,7 @@ const { GIFEncoder, quantize, applyPalette } = require('gifenc');
 const SAMPLE_STRIDE = 5;
 const UPSCALE = 4;
 const MAX_SAMPLED_FRAMES = 90;
+const GUTTER_PX = 2;
 
 // Nearest-neighbor upscale of a WIDTH*HEIGHT*3 RGB buffer to an
 // (WIDTH*scale)*(HEIGHT*scale)*4 RGBA buffer (gifenc wants RGBA input).
@@ -91,4 +92,48 @@ function writePreviewStills({ frames, width, height, outputPaths }) {
   return outputPaths;
 }
 
-module.exports = { writePreviewGif, writePreviewStills };
+// Composites up to gridSize*gridSize frames (nominally captured a fraction
+// of a second apart, so motion reads across the grid) into ONE still image
+// - same "Claude's vision only sees frame 0 of an animated GIF" reasoning
+// as writePreviewStills above, but a single still is motion-blind; a grid
+// of near-frames in one image isn't. `frames[i]` may be missing (undefined/
+// null) if the run ended before that slot's target time was reached - that
+// cell is left blank (the dark canvas background) rather than erroring,
+// since "this epoch wasn't reached" is itself meaningful information (see
+// agent/archive.js/agent/prompt.js's handling of a null contact sheet).
+function writeContactSheet({ frames, width, height, gridSize = 3, outputPath }) {
+  const cellW = width * UPSCALE;
+  const cellH = height * UPSCALE;
+  const outW = cellW * gridSize + GUTTER_PX * (gridSize - 1);
+  const outH = cellH * gridSize + GUTTER_PX * (gridSize - 1);
+
+  const rgba = new Uint8Array(outW * outH * 4);
+  for (let i = 3; i < rgba.length; i += 4) rgba[i] = 255; // opaque canvas; r/g/b stay 0 (black) for gutters/blank cells
+
+  for (let cell = 0; cell < gridSize * gridSize; cell++) {
+    const frame = frames[cell];
+    if (!frame) continue;
+    const col = cell % gridSize;
+    const row = (cell / gridSize) | 0;
+    const cellRgba = upscaleToRgba(frame, width, height, UPSCALE);
+    const offsetX = col * (cellW + GUTTER_PX);
+    const offsetY = row * (cellH + GUTTER_PX);
+    for (let y = 0; y < cellH; y++) {
+      const dstStart = ((offsetY + y) * outW + offsetX) * 4;
+      const srcStart = y * cellW * 4;
+      rgba.set(cellRgba.subarray(srcStart, srcStart + cellW * 4), dstStart);
+    }
+  }
+
+  const palette = quantize(rgba, 256);
+  const index = applyPalette(rgba, palette);
+
+  const gif = GIFEncoder();
+  gif.writeFrame(index, outW, outH, { delay: 0, repeat: 0, palette });
+  gif.finish();
+
+  fs.writeFileSync(outputPath, gif.bytes());
+  return outputPath;
+}
+
+module.exports = { writePreviewGif, writePreviewStills, writeContactSheet };

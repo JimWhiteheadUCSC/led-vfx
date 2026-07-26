@@ -131,14 +131,14 @@ async function main() {
   }
 
   if (attempts.passed && attempts.final) {
-    const { source, frontmatter, knowledgeUpdate, gifPath, stillPaths } = attempts.final;
+    const { source, frontmatter, knowledgeUpdate, gifPath, contactSheetPaths } = attempts.final;
     const result = commitNewPiece({
       uuid: issuedUuid,
       title: frontmatter.title,
       source,
       knowledgeUpdate,
       previewGifPath: gifPath,
-      previewStillPaths: stillPaths,
+      previewContactSheetPaths: contactSheetPaths,
     });
     console.log(`[agent] committed: ${result.relPath}`);
     if (result.knowledgePath) console.log(`[agent] knowledge update: ${result.knowledgePath}`);

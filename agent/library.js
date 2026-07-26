@@ -10,7 +10,7 @@ const fs = require('fs');
 const path = require('path');
 const { EFFECTS_DIR, INDEX_PATH, PLAYLIST_PATH } = require('./config');
 const { appendKnowledgeNote } = require('./knowledge');
-const { stillPathsFor } = require('./archive');
+const { contactSheetPathsFor } = require('./archive');
 
 const DIACRITIC_MARKS_RE = /[̀-ͯ]/g;
 
@@ -57,15 +57,19 @@ function resolveCollisionFreePath(slug, uuid) {
   return path.join(EFFECTS_DIR, `${slug}-${uuid.slice(0, 8)}.js`);
 }
 
-// Renames a temp-named preview GIF and its stills (written during a
-// validation attempt, before the final slugified filename was known) to
-// match the just-committed effect's basename. Best-effort: a rename
-// failure is a warning-worthy cosmetic loss (the piece is already
-// committed), not something worth failing the whole commit over.
-function renamePreviewArtifacts(effectPath, previewGifPath, previewStillPaths) {
+// Renames a temp-named preview GIF and its epoch contact sheets (written
+// during a validation attempt, before the final slugified filename was
+// known) to match the just-committed effect's basename. Best-effort: a
+// rename failure is a warning-worthy cosmetic loss (the piece is already
+// committed), not something worth failing the whole commit over. `null`
+// holes (an epoch the run never reached) are skipped, not renamed.
+function renamePreviewArtifacts(effectPath, previewGifPath, previewContactSheetPaths) {
   const finalGifPath = effectPath.replace(/\.js$/, '.gif');
-  const finalStillPaths = stillPathsFor(effectPath);
-  const renames = [[previewGifPath, finalGifPath], ...(previewStillPaths || []).map((p, i) => [p, finalStillPaths[i]])];
+  const finalContactSheetPaths = contactSheetPathsFor(effectPath);
+  const renames = [
+    [previewGifPath, finalGifPath],
+    ...(previewContactSheetPaths || []).map((p, i) => [p, finalContactSheetPaths[i]]),
+  ];
   for (const [from, to] of renames) {
     if (!from || !to) continue;
     try {
@@ -76,17 +80,17 @@ function renamePreviewArtifacts(effectPath, previewGifPath, previewStillPaths) {
   }
 }
 
-// { uuid, title, source, knowledgeUpdate?, previewGifPath?, previewStillPaths? }
+// { uuid, title, source, knowledgeUpdate?, previewGifPath?, previewContactSheetPaths? }
 // -> writes the effect, updates index.json + playlist.json, renames any
 // preview artifacts from the validating attempt's scratch name to the
 // final one, and (if given) delegates the knowledge-base note. Only ever
 // called after validateProgram() has returned pass:true for this exact
 // source - see agent/tool.js.
-function commitNewPiece({ uuid, title, source, knowledgeUpdate, previewGifPath, previewStillPaths }) {
+function commitNewPiece({ uuid, title, source, knowledgeUpdate, previewGifPath, previewContactSheetPaths }) {
   const slug = slugify(title);
   const effectPath = resolveCollisionFreePath(slug, uuid);
   fs.writeFileSync(effectPath, source);
-  renamePreviewArtifacts(effectPath, previewGifPath, previewStillPaths);
+  renamePreviewArtifacts(effectPath, previewGifPath, previewContactSheetPaths);
 
   const basename = path.basename(effectPath);
   const relPath = `effects/${basename}`;

@@ -30,14 +30,15 @@ loadEnvFile(path.join(__dirname, '..', '.env'));
 const REPO_ROOT = path.join(__dirname, '..');
 
 module.exports = {
-  MODEL_ID: process.env.AGENT_MODEL || 'claude-opus-4-8',
-  EFFORT: 'xhigh',
+  MODEL_ID: process.env.AGENT_MODEL || 'claude-opus-5',
+  EFFORT: 'high',
   MAX_TOKENS: 64000,
   MAX_ATTEMPTS: 3,
   MAX_ITERATIONS: 16, // outer safety net - generous headroom over MAX_ATTEMPTS for research turns
   WEB_TOOL_MAX_USES: 5,
   RECENT_PIECES_LIMIT: 8,
-  STILL_COUNT: 3, // stills per piece, evenly spaced across its run
+  // Contact-sheet artifact count/labeling per piece now lives at
+  // validate/epochs.js's EPOCHS - one source of truth instead of two.
 
   REPO_ROOT,
   EFFECTS_DIR: path.join(REPO_ROOT, 'effects'),
