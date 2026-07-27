@@ -113,7 +113,17 @@ async function main() {
     stream: true,
   });
 
+  // Full thinking text, per turn - console only ever got a 500-char
+  // preview (and journalctl truncates further on top of that), so this
+  // was previously unrecoverable after the fact. Kept in memory only
+  // (never written mid-session) and handed to commitNewPiece() on
+  // success, alongside the preview GIF/contact sheets - see
+  // agent/library.js's formatThinkingLog.
+  const thinkingLog = [];
+  let turnNumber = 0;
+
   for await (const stream of runner) {
+    turnNumber += 1;
     const message = await stream.finalMessage();
     if (message.usage) {
       console.log(
@@ -124,7 +134,9 @@ async function main() {
     }
     for (const block of message.content) {
       if (block.type === 'thinking' && block.thinking) {
-        console.log(`[agent] thinking: ${block.thinking.slice(0, 500)}`);
+        thinkingLog.push({ turn: turnNumber, text: block.thinking });
+        const preview = block.thinking.length > 300 ? `${block.thinking.slice(0, 300)}...` : block.thinking;
+        console.log(`[agent] thinking (turn ${turnNumber}, ${block.thinking.length} chars): ${preview}`);
       }
     }
     if (attempts.passed || attempts.count >= maxAttempts) break;
@@ -139,9 +151,11 @@ async function main() {
       knowledgeUpdate,
       previewGifPath: gifPath,
       previewContactSheetPaths: contactSheetPaths,
+      thinkingLog,
     });
     console.log(`[agent] committed: ${result.relPath}`);
     if (result.knowledgePath) console.log(`[agent] knowledge update: ${result.knowledgePath}`);
+    if (result.thinkingPath) console.log(`[agent] thinking log: ${result.thinkingPath}`);
     return;
   }
 

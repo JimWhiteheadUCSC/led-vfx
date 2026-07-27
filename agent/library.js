@@ -80,17 +80,46 @@ function renamePreviewArtifacts(effectPath, previewGifPath, previewContactSheetP
   }
 }
 
-// { uuid, title, source, knowledgeUpdate?, previewGifPath?, previewContactSheetPaths? }
+// thinkingLog: agent/session.js's array of { turn, text } - the model's
+// full extended-thinking text for every turn of the session (not just
+// the winning attempt), never truncated. Kept in memory the whole
+// session and written once here, so - unlike the preview GIF/contact
+// sheets, which validateProgram() writes to a scratch path per attempt
+// and this function only renames - there is never an orphaned scratch
+// file to clean up if an attempt fails; nothing is written to disk
+// until commit.
+function formatThinkingLog({ title, uuid, thinkingLog }) {
+  const header = `# Thinking log — ${title}\n\n${uuid}, committed ${new Date().toISOString().slice(0, 10)}\n\n`;
+  const body = thinkingLog.map(({ turn, text }) => `## Turn ${turn}\n\n${text}`).join('\n\n---\n\n');
+  return `${header}${body}\n`;
+}
+
+// { uuid, title, source, knowledgeUpdate?, previewGifPath?, previewContactSheetPaths?, thinkingLog? }
 // -> writes the effect, updates index.json + playlist.json, renames any
 // preview artifacts from the validating attempt's scratch name to the
-// final one, and (if given) delegates the knowledge-base note. Only ever
-// called after validateProgram() has returned pass:true for this exact
-// source - see agent/tool.js.
-function commitNewPiece({ uuid, title, source, knowledgeUpdate, previewGifPath, previewContactSheetPaths }) {
+// final one, writes the full thinking log (if given) beside it, and (if
+// given) delegates the knowledge-base note. Only ever called after
+// validateProgram() has returned pass:true for this exact source - see
+// agent/tool.js.
+function commitNewPiece({
+  uuid,
+  title,
+  source,
+  knowledgeUpdate,
+  previewGifPath,
+  previewContactSheetPaths,
+  thinkingLog,
+}) {
   const slug = slugify(title);
   const effectPath = resolveCollisionFreePath(slug, uuid);
   fs.writeFileSync(effectPath, source);
   renamePreviewArtifacts(effectPath, previewGifPath, previewContactSheetPaths);
+
+  let thinkingPath = null;
+  if (thinkingLog && thinkingLog.length > 0) {
+    thinkingPath = effectPath.replace(/\.js$/, '.thinking.md');
+    fs.writeFileSync(thinkingPath, formatThinkingLog({ title, uuid, thinkingLog }));
+  }
 
   const basename = path.basename(effectPath);
   const relPath = `effects/${basename}`;
@@ -113,7 +142,7 @@ function commitNewPiece({ uuid, title, source, knowledgeUpdate, previewGifPath, 
     });
   }
 
-  return { effectPath, relPath, knowledgePath };
+  return { effectPath, relPath, knowledgePath, thinkingPath };
 }
 
 module.exports = { slugify, resolveCollisionFreePath, commitNewPiece };
