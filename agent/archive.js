@@ -33,6 +33,15 @@ function contactSheetPathsFor(effectPath) {
   return EPOCHS.map((epoch) => `${base}.epoch-${epoch.label}.gif`);
 }
 
+// A contact sheet (or preview GIF) as an Anthropic image content block.
+// Lives here rather than in prompt.js because both the archive prompt and
+// the write_effect tool result hand sheets to the model, and they must
+// encode them identically.
+function imageBlockFromGif(absPath) {
+  const data = fs.readFileSync(absPath).toString('base64');
+  return { type: 'image', source: { type: 'base64', media_type: 'image/gif', data } };
+}
+
 // Old flat-stills naming (pre-epoch contact sheets), left over on disk for
 // any piece created before this scheme existed - deleted opportunistically
 // the first time that piece is backfilled under the new scheme, so stale,
@@ -111,4 +120,4 @@ async function gatherArchive() {
   return recent;
 }
 
-module.exports = { gatherArchive, parseFrontmatter, contactSheetPathsFor };
+module.exports = { gatherArchive, parseFrontmatter, contactSheetPathsFor, imageBlockFromGif };

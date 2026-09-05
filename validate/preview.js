@@ -6,12 +6,20 @@
 // (not every frame, to keep file size sane) and nearest-neighbor upscaled,
 // since a native 64x64 GIF is hard to read in a file browser or the
 // creativity agent's own vision context when it studies its archive.
-
+//
+// UPSCALE is nearest-neighbor, so it adds ZERO information over the native
+// 64x64 frames - it only makes them legible. That makes it pure cost on the
+// agent's side: contact sheets are sent to the model as images, and image
+// tokens scale with pixel area (~w*h/750). At 4x a 3x3 sheet was 772x772
+// (~790 tokens each, ~18K tokens per session across the archive); at 2x it
+// is 386x386 (~200 tokens each) for exactly the same pixels. Raise it again
+// only if a human actually can't read the files - the model cannot tell the
+// difference.
 const fs = require('fs');
 const { GIFEncoder, quantize, applyPalette } = require('gifenc');
 
 const SAMPLE_STRIDE = 5;
-const UPSCALE = 4;
+const UPSCALE = 2;
 const MAX_SAMPLED_FRAMES = 90;
 const GUTTER_PX = 2;
 
