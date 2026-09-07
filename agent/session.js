@@ -5,10 +5,13 @@
 // knowledge base + recent archive, writes a new effect via the
 // write_effect tool, validates with up to MAX_ATTEMPTS retries, and on
 // success commits it to the live library (index.json + playlist.json).
-// On exhaustion, touches nothing and exits non-zero - the render daemon
-// already keeps looping whatever playlist.json already has, so that
-// absence of a new entry *is* the "fall back to a library piece"
-// CLAUDE.md describes; there's nothing further to build for it here.
+// On exhaustion, the library itself is untouched and exits non-zero -
+// the render daemon already keeps looping whatever playlist.json
+// already has, so that absence of a new entry *is* the "fall back to a
+// library piece" CLAUDE.md describes. The only thing written is a
+// failed-session log (agent/failed-sessions/) recording the full
+// thinking and each attempt's validator errors, so a run that needed
+// changes to the validator itself leaves a trail explaining why.
 //
 //   node agent/session.js [--dry-run] [--model <id>] [--max-attempts <n>]
 //
@@ -19,8 +22,8 @@ const crypto = require('crypto');
 const config = require('./config');
 const { gatherArchive } = require('./archive');
 const { buildPrompt } = require('./prompt');
-const { createWriteEffectTool } = require('./tool');
-const { commitNewPiece } = require('./library');
+const { createWriteEffectTool, createPreviewEffectTool } = require('./tool');
+const { commitNewPiece, writeFailedSessionLog } = require('./library');
 
 function parseArgs(argv) {
   const args = argv.slice(2);
@@ -68,11 +71,11 @@ async function main() {
   const { dryRun, model, maxAttempts } = parseArgs(process.argv);
 
   console.log('[agent] gathering archive...');
-  const archive = await gatherArchive();
-  console.log(`[agent] archive: ${archive.length} piece(s)`);
+  const { pieces: archive, totalCount: archiveTotalCount } = await gatherArchive();
+  console.log(`[agent] archive: ${archive.length} of ${archiveTotalCount} piece(s) shown`);
 
   const issuedUuid = crypto.randomUUID();
-  const { system, messages } = buildPrompt({ archive, issuedUuid, maxAttempts });
+  const { system, messages } = buildPrompt({ archive, archiveTotalCount, issuedUuid, maxAttempts });
 
   if (dryRun) {
     console.log('[agent] --dry-run: assembled payload (no API call)');
@@ -94,6 +97,8 @@ async function main() {
 
   const attempts = { count: 0, passed: false, history: [], final: null };
   const writeEffectTool = createWriteEffectTool({ attempts, issuedUuid, maxAttempts });
+  const previewBudget = { count: 0 };
+  const previewEffectTool = createPreviewEffectTool({ previewBudget, issuedUuid });
 
   console.log(`[agent] starting session (model=${model}, max attempts=${maxAttempts})`);
 
@@ -106,6 +111,7 @@ async function main() {
     messages,
     tools: [
       writeEffectTool,
+      previewEffectTool,
       { type: 'web_search_20260318', name: 'web_search', max_uses: config.WEB_TOOL_MAX_USES },
       { type: 'web_fetch_20260318', name: 'web_fetch', max_uses: config.WEB_TOOL_MAX_USES },
     ],
@@ -155,6 +161,11 @@ async function main() {
     });
     console.log(`[agent] committed: ${result.relPath}`);
     if (result.knowledgePath) console.log(`[agent] knowledge update: ${result.knowledgePath}`);
+    if (result.knowledgeError) {
+      console.error(
+        `[agent] knowledge update REJECTED (piece still committed above): ${result.knowledgeError}`
+      );
+    }
     if (result.thinkingPath) console.log(`[agent] thinking log: ${result.thinkingPath}`);
     return;
   }
@@ -165,6 +176,8 @@ async function main() {
     for (const e of attempt.errors) console.error(`    - ${e}`);
   }
   console.error('[agent] nothing committed - index.json and playlist.json untouched.');
+  const failedLogPath = writeFailedSessionLog({ uuid: issuedUuid, attempts, thinkingLog });
+  if (failedLogPath) console.error(`[agent] failed-session log: ${failedLogPath}`);
   process.exit(1);
 }
 

@@ -91,9 +91,16 @@ async function ensureContactSheets(effectPath, source) {
     : contactSheetPaths.map(() => null);
 }
 
-// Returns the most recent RECENT_PIECES_LIMIT pieces (by frontmatter
-// `created`, descending), each as
-// { uuid, relPath, absPath, source, frontmatter, contactSheetPaths }.
+// Returns { pieces, totalCount }: pieces is the most recent
+// RECENT_PIECES_LIMIT entries (by frontmatter `created`, descending),
+// each as { uuid, relPath, absPath, source, frontmatter,
+// contactSheetPaths }; totalCount is the size of the WHOLE library
+// (every index.json entry), not just the slice shown - naming.md's
+// earned-name gate ("the library holds at least 12 pieces") is a claim
+// about the whole library, and RECENT_PIECES_LIMIT (8, per config.js)
+// is already below that threshold, so a caller that only ever sees
+// pieces.length can never correctly evaluate that gate once the archive
+// outgrows the slice. See agent/prompt.js's use of totalCount.
 async function gatherArchive() {
   const index = JSON.parse(fs.readFileSync(INDEX_PATH, 'utf8'));
   const pieces = [];
@@ -111,13 +118,14 @@ async function gatherArchive() {
   }
 
   pieces.sort((a, b) => String(b.frontmatter.created || '').localeCompare(String(a.frontmatter.created || '')));
+  const totalCount = pieces.length;
   const recent = pieces.slice(0, RECENT_PIECES_LIMIT);
 
   for (const piece of recent) {
     piece.contactSheetPaths = await ensureContactSheets(piece.absPath, piece.source);
   }
 
-  return recent;
+  return { pieces: recent, totalCount };
 }
 
 module.exports = { gatherArchive, parseFrontmatter, contactSheetPathsFor, imageBlockFromGif };

@@ -8,7 +8,7 @@
 
 const fs = require('fs');
 const path = require('path');
-const { EFFECTS_DIR, INDEX_PATH, PLAYLIST_PATH } = require('./config');
+const { EFFECTS_DIR, FAILED_SESSIONS_DIR, INDEX_PATH, PLAYLIST_PATH } = require('./config');
 const { appendKnowledgeNote } = require('./knowledge');
 const { contactSheetPathsFor } = require('./archive');
 
@@ -94,6 +94,53 @@ function formatThinkingLog({ title, uuid, thinkingLog }) {
   return `${header}${body}\n`;
 }
 
+// A session that exhausted every attempt without a passing piece leaves
+// nothing in the live library, but the reasoning and the validator's
+// actual complaints at each attempt are exactly what explains *why* -
+// and per CLAUDE.md's validation harness section, failures here are
+// meant to be data-driven, not just a verdict. Interleaves attempts.history
+// (agent/tool.js: {attemptNumber, pass, errors, warnings} per call) with
+// the matching thinking turns so a reader can see what the model tried,
+// what the validator said back, and what it did next - the same shape
+// as formatThinkingLog above, plus the errors a committed piece never
+// needed recording.
+function formatFailedSessionLog({ uuid, attempts, thinkingLog }) {
+  const date = new Date().toISOString().slice(0, 10);
+  const header =
+    `# Failed session — no piece committed\n\n` +
+    `${uuid}, ${date}, ${attempts.count} attempt(s) used\n\n`;
+
+  const attemptSections = attempts.history.map((a) => {
+    const errors = a.errors && a.errors.length ? a.errors.map((e) => `  - ${e}`).join('\n') : '  (none)';
+    const warnings = a.warnings && a.warnings.length ? a.warnings.map((w) => `  - ${w}`).join('\n') : null;
+    return (
+      `### Attempt ${a.attemptNumber} — ${a.pass ? 'PASSED' : 'FAILED'}\n\n` +
+      `Errors:\n${errors}\n` +
+      (warnings ? `\nWarnings:\n${warnings}\n` : '')
+    );
+  });
+
+  const thinkingSections = thinkingLog.map(({ turn, text }) => `## Turn ${turn}\n\n${text}`);
+
+  return (
+    header +
+    `## Validation attempts\n\n${attemptSections.join('\n')}\n---\n\n` +
+    `## Full thinking log\n\n${thinkingSections.join('\n\n---\n\n')}\n`
+  );
+}
+
+// Called from session.js only after the attempt budget is exhausted with
+// no passing piece - the mirror image of commitNewPiece's thinkingPath,
+// for the run that never got a committed piece to write it beside.
+function writeFailedSessionLog({ uuid, attempts, thinkingLog }) {
+  if (!thinkingLog || thinkingLog.length === 0) return null;
+  fs.mkdirSync(FAILED_SESSIONS_DIR, { recursive: true });
+  const date = new Date().toISOString().slice(0, 10);
+  const logPath = path.join(FAILED_SESSIONS_DIR, `${date}-${uuid}.thinking.md`);
+  fs.writeFileSync(logPath, formatFailedSessionLog({ uuid, attempts, thinkingLog }));
+  return logPath;
+}
+
 // { uuid, title, source, knowledgeUpdate?, previewGifPath?, previewContactSheetPaths?, thinkingLog? }
 // -> writes the effect, updates index.json + playlist.json, renames any
 // preview artifacts from the validating attempt's scratch name to the
@@ -133,16 +180,26 @@ function commitNewPiece({
   atomicWriteFileSync(PLAYLIST_PATH, serializePlaylist(playlist));
 
   let knowledgePath = null;
+  let knowledgeError = null;
   if (knowledgeUpdate && knowledgeUpdate.file && knowledgeUpdate.note) {
-    knowledgePath = appendKnowledgeNote({
-      file: knowledgeUpdate.file,
-      note: knowledgeUpdate.note,
-      uuid,
-      date: new Date().toISOString().slice(0, 10),
-    });
+    // The piece above is already committed by this point - a malformed
+    // knowledgeUpdate.file (e.g. the model echoing a "knowledge/" prefix
+    // resolveKnowledgeFile() doesn't want) must not crash the whole
+    // session and masquerade as a failed run when the actual artwork
+    // landed fine. Report it instead of throwing.
+    try {
+      knowledgePath = appendKnowledgeNote({
+        file: knowledgeUpdate.file,
+        note: knowledgeUpdate.note,
+        uuid,
+        date: new Date().toISOString().slice(0, 10),
+      });
+    } catch (err) {
+      knowledgeError = err.message;
+    }
   }
 
-  return { effectPath, relPath, knowledgePath, thinkingPath };
+  return { effectPath, relPath, knowledgePath, knowledgeError, thinkingPath };
 }
 
-module.exports = { slugify, resolveCollisionFreePath, commitNewPiece };
+module.exports = { slugify, resolveCollisionFreePath, commitNewPiece, writeFailedSessionLog };

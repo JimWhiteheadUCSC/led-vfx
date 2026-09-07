@@ -33,7 +33,12 @@ module.exports = {
   MODEL_ID: process.env.AGENT_MODEL || 'claude-opus-5',
   EFFORT: 'high',
   MAX_TOKENS: 64000,
-  MAX_ATTEMPTS: 3,
+  MAX_ATTEMPTS: 5,
+  // Separate from MAX_ATTEMPTS: preview_effect (validate/quickPreview.js)
+  // never validates or commits anything, so it doesn't compete with the
+  // write_effect attempt budget - it has its own cap purely to bound the
+  // extra sandbox spin-up + render + image-token cost per session.
+  MAX_PREVIEW_CALLS: 8,
   MAX_ITERATIONS: 16, // outer safety net - generous headroom over MAX_ATTEMPTS for research turns
   WEB_TOOL_MAX_USES: 5,
   // The archive is tiered: every piece contributes its frontmatter,
@@ -55,6 +60,7 @@ module.exports = {
 
   REPO_ROOT,
   EFFECTS_DIR: path.join(REPO_ROOT, 'effects'),
+  FAILED_SESSIONS_DIR: path.join(REPO_ROOT, 'agent', 'failed-sessions'),
   KNOWLEDGE_DIR: path.join(REPO_ROOT, 'knowledge'),
   INDEX_PATH: path.join(REPO_ROOT, 'index.json'),
   PLAYLIST_PATH: path.join(REPO_ROOT, 'effects', 'playlist.json'),

@@ -73,19 +73,31 @@ function pieceContentBlocks(piece, { includeSource }) {
   return blocks;
 }
 
-// archive: agent/archive.js's gatherArchive() output.
+// archive: agent/archive.js's gatherArchive() output's `pieces` (the
+// recent slice actually shown, in full).
+// archiveTotalCount: that same call's `totalCount` - the WHOLE library's
+// size, not just the slice - so the model can evaluate naming.md's
+// "library holds at least 12 pieces" gate even once the archive grows
+// past RECENT_PIECES_LIMIT and this slice stops being the whole story.
 // issuedUuid: host-generated crypto.randomUUID() for the piece to be written.
-function buildPrompt({ archive, issuedUuid, maxAttempts = config.MAX_ATTEMPTS }) {
+function buildPrompt({ archive, archiveTotalCount, issuedUuid, maxAttempts = config.MAX_ATTEMPTS }) {
   const system = [
     { type: 'text', text: readContractText(), cache_control: { type: 'ephemeral' } },
     { type: 'text', text: readKnowledgeBaseText(), cache_control: { type: 'ephemeral' } },
   ];
 
+  const olderCount = archiveTotalCount - archive.length;
   const archiveIntro = {
     type: 'text',
     text:
-      `Here is the recent archive of pieces you (or a prior instance of you) have made - ` +
-      `${archive.length} piece(s), most recent first. The newest ` +
+      `Here is the recent archive of pieces you (or a prior instance of you) have made, most ` +
+      `recent first. The library holds ${archiveTotalCount} piece(s) in total; the ${archive.length} ` +
+      `most recent are shown below` +
+      (olderCount > 0
+        ? `, plus ${olderCount} older one(s) not shown here - naming.md's evidence gate counts ` +
+          `the library total, not just what's shown.`
+        : ` (that's all of them).`) +
+      ` The newest ` +
       `${Math.min(config.FULL_SOURCE_PIECES, archive.length)} include their full source; the ` +
       `rest are catalogue-only (identity, rationale, lineage and images, no code). Each ` +
       `includes, for ` +
@@ -106,13 +118,21 @@ function buildPrompt({ archive, issuedUuid, maxAttempts = config.MAX_ATTEMPTS })
   const instruction = {
     type: 'text',
     text:
-      `This is an hourly working session, not the weekly review session - naming/ratification ` +
-      `powers aren't available here (per knowledge/naming.md); if you feel the pull to name ` +
-      `yourself, write the feeling into your notes and return to work.\n\n` +
+      `This is a full working session where the goal is to create a novel artwork. ` +
+      `Naming and ratification powers are available in any session now (per ` +
+      `knowledge/naming.md) - there's no separate weekly review session in this ` +
+      `architecture - but the evidence gate and the draft/ratify timing that doc ` +
+      `describes still apply; check them before drafting or ratifying a name.\n\n` +
       `Write a new piece now, using the write_effect tool. Its UUID is exactly "${issuedUuid}" - ` +
       `embed that exact string as the frontmatter id. You have up to ${maxAttempts} attempts; ` +
-      `this is attempt 1. If validation fails, you'll see the errors and can try again. If this ` +
-      `is your final attempt and it fails, respond with text only - do not call write_effect again.\n\n` +
+      `this is attempt 1. Don't be overly concerned about running out of attempts - historically ` +
+      `only a handful of sessions have needed a 3rd. If validation fails, you'll see the errors ` +
+      `and can try again. If this is your final attempt and it fails, respond with text only - ` +
+      `do not call write_effect again.\n\n` +
+      `While drafting, use preview_effect to actually render a contact sheet of your draft at a ` +
+      `time you choose - it costs nothing against your write_effect attempts. Prefer it over ` +
+      `hand-simulating what the code would produce; check what a change actually looks like ` +
+      `before spending an attempt on it.\n\n` +
       `Web search and web fetch are available if you want to look into an influence before writing ` +
       `- optional, not required.`,
     cache_control: { type: 'ephemeral' },

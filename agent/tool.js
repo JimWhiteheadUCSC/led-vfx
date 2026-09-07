@@ -1,8 +1,11 @@
 'use strict';
 
-// The write_effect tool: the agent's only way to actually produce
-// anything. Retry accounting lives in the shared `attempts` object the
-// caller (agent/session.js) owns and inspects from outside the loop -
+// Two tools: write_effect, the agent's only way to actually produce
+// anything (validates for real, spends an attempt, gates deployment),
+// and preview_effect, a cheap look at a draft's real render - no
+// validation gate, no attempt spent - for iterating before submission.
+// write_effect's retry accounting lives in the shared `attempts` object
+// the caller (agent/session.js) owns and inspects from outside the loop -
 // this tool's run() enforces the same limit from inside, belt-and-
 // suspenders (see the plan's reasoning on why neither alone is trusted).
 
@@ -12,6 +15,7 @@ const { betaTool } = require('@anthropic-ai/sdk/helpers/beta/json-schema');
 const config = require('./config');
 const { EFFECTS_DIR } = config;
 const { validateProgram } = require('../validate');
+const { renderQuickPreview, MAX_PREVIEW_T_SECONDS } = require('../validate/quickPreview');
 const { contactSheetPathsFor, imageBlockFromGif } = require('./archive');
 const { EPOCHS } = require('../validate/epochs');
 
@@ -22,6 +26,14 @@ const { EPOCHS } = require('../validate/epochs');
 // file.
 function scratchPreviewBase(issuedUuid, attemptNumber) {
   return path.join(EFFECTS_DIR, `.attempt-${issuedUuid}-${attemptNumber}.js`);
+}
+
+// Same idea for preview_effect's one-off contact sheets - a dot-prefixed
+// scratch name in the same directory, deleted as soon as it's been read
+// into an image block (see createPreviewEffectTool's run()), so nothing
+// preview-related ever lingers on disk.
+function scratchPreviewSheetPath(issuedUuid, callNumber) {
+  return path.join(EFFECTS_DIR, `.preview-${issuedUuid}-${callNumber}.gif`);
 }
 
 function deleteIfExists(p) {
@@ -251,4 +263,93 @@ function createWriteEffectTool({ attempts, issuedUuid, maxAttempts = config.MAX_
   });
 }
 
-module.exports = { createWriteEffectTool };
+// { previewBudget, issuedUuid, maxPreviewCalls? } -> a BetaRunnableTool
+// for client.beta.messages.toolRunner. previewBudget is a shared
+// { count } object the caller (agent/session.js) creates once per
+// session and never inspects from outside - unlike write_effect's
+// `attempts`, nothing downstream depends on this budget except this
+// tool's own enforcement, so there's no belt-and-suspenders need here.
+function createPreviewEffectTool({ previewBudget, issuedUuid, maxPreviewCalls = config.MAX_PREVIEW_CALLS }) {
+  return betaTool({
+    name: 'preview_effect',
+    description:
+      'Render ONE real contact-sheet look at a draft, at a simulated time you choose - no ' +
+      'validation gate, no frontmatter requirement, and it does NOT spend one of your ' +
+      'write_effect attempts. Use this while iterating on a draft (does the tile line up, ' +
+      'does the defect read, is the color balance right) instead of hand-simulating what the ' +
+      `code would produce. Capped at ${maxPreviewCalls} calls this session, and \`t\` is capped ` +
+      `at ${MAX_PREVIEW_T_SECONDS}s - a piece's long-run behavior is what write_effect's real ` +
+      'validation (with its collapse gate) is for, not this tool. Returns the same ' +
+      'meanBrightness/spatialContrast/temporalVariance/spread/edgeMass numbers the real ' +
+      'validator reports, computed the same way, over just the frames captured here.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        source: {
+          type: 'string',
+          description:
+            'The effect program source so far - frontmatter can be incomplete or absent, this ' +
+            'never validates or commits anything.',
+        },
+        t: {
+          type: 'number',
+          description: `Simulated seconds into the run to preview (default 0). Capped at ${MAX_PREVIEW_T_SECONDS}.`,
+        },
+      },
+      required: ['source'],
+    },
+    run: async ({ source, t }) => {
+      if (previewBudget.count >= maxPreviewCalls) {
+        return (
+          `Preview budget (${maxPreviewCalls}) already used up this session - do not call ` +
+          'preview_effect again. Use write_effect when ready.'
+        );
+      }
+      previewBudget.count += 1;
+      const callNumber = previewBudget.count;
+      const sheetPath = scratchPreviewSheetPath(issuedUuid, callNumber);
+
+      const result = await renderQuickPreview(source, { t, outputPath: sheetPath });
+
+      if (result.error) {
+        deleteIfExists(result.contactSheetPath);
+        return (
+          `Preview ${callNumber}/${maxPreviewCalls} failed: ${result.error}\n\n` +
+          '(This did not spend a write_effect attempt.)'
+        );
+      }
+
+      const remaining = maxPreviewCalls - previewBudget.count;
+      const clampNote = result.clamped
+        ? ` (clamped from your requested t - ${MAX_PREVIEW_T_SECONDS}s is the preview cap)`
+        : '';
+      const s = result.stats;
+      const statsLine = s
+        ? `temporalVariance=${n(s.temporalVariance, 4)} meanBrightness=${n(s.meanBrightness, 2)} ` +
+          `spatialContrast=${n(s.spatialContrast, 2)} spread=${n(s.spread, 1)} edgeMass=${n(s.edgeMass, 3)}`
+        : '(not enough frames reached to compute stats)';
+      const header =
+        `Preview ${callNumber}/${maxPreviewCalls} at t≈${result.targetSeconds}s${clampNote}, ` +
+        `${remaining} preview call(s) remaining.\n\n${statsLine}`;
+
+      let image = null;
+      if (result.contactSheetPath) {
+        try {
+          image = imageBlockFromGif(result.contactSheetPath);
+        } catch {
+          // sheet failed to read back - the stats/header text above still stands
+        }
+      }
+      deleteIfExists(result.contactSheetPath);
+
+      const blocks = [{ type: 'text', text: header }];
+      if (image) {
+        blocks.push({ type: 'text', text: `[preview at t≈${result.targetSeconds}s: a 3x3 grid of frames ~0.7s apart]` });
+        blocks.push(image);
+      }
+      return blocks;
+    },
+  });
+}
+
+module.exports = { createWriteEffectTool, createPreviewEffectTool };
