@@ -1,9 +1,15 @@
 'use strict';
 
-// Two tools: write_effect, the agent's only way to actually produce
-// anything (validates for real, spends an attempt, gates deployment),
-// and preview_effect, a cheap look at a draft's real render - no
-// validation gate, no attempt spent - for iterating before submission.
+// Three tools:
+//   write_effect        - the agent's only way to actually produce
+//                         anything (validates for real, spends an
+//                         attempt, gates deployment)
+//   preview_effect      - a cheap look at a draft's real render, no
+//                         validation gate and no attempt spent, for
+//                         iterating before submission
+//   read_archive_piece  - any past piece by UUID, source and images
+//                         included, so the pieces that fall outside the
+//                         opening payload's recent slice stay reachable
 // write_effect's retry accounting lives in the shared `attempts` object
 // the caller (agent/session.js) owns and inspects from outside the loop -
 // this tool's run() enforces the same limit from inside, belt-and-
@@ -16,7 +22,13 @@ const config = require('./config');
 const { EFFECTS_DIR } = config;
 const { validateProgram } = require('../validate');
 const { renderQuickPreview, MAX_PREVIEW_T_SECONDS } = require('../validate/quickPreview');
-const { contactSheetPathsFor, imageBlockFromGif } = require('./archive');
+const {
+  contactSheetPathsFor,
+  imageBlockFromGif,
+  loadPieceByUuid,
+  pieceContentBlocks,
+} = require('./archive');
+const { resolveKnowledgeFile } = require('./knowledge');
 const { EPOCHS } = require('../validate/epochs');
 
 // A scratch basename for this attempt's preview artifacts - never
@@ -145,19 +157,77 @@ function contactSheetBlocks(report) {
   return blocks;
 }
 
+// Pre-flights the attached knowledgeUpdates against the same rules
+// agent/knowledge.js will enforce at commit time, returning one problem
+// string per bad entry (empty if all are fine). Worth doing here because
+// the commit happens after the session has ended: without this, a
+// rejected update's only trace is a console line the model never sees and
+// cannot act on, and the knowledge write silently doesn't happen while
+// the piece commits fine.
+// Returns one { ok } | { ok: false, problem } per entry, positionally.
+function knowledgeUpdateChecks(knowledgeUpdates) {
+  const checks = [];
+  // Entries are applied in order, so a document created by an earlier
+  // entry is already on disk by the time a later one runs - track them
+  // here too, or two document entries for the same new file would both
+  // look fine on disk now and only collide at commit.
+  const createdHere = new Set();
+
+  knowledgeUpdates.forEach((update, i) => {
+    const label = `knowledgeUpdates[${i}]`;
+    const { file, note, mode } = update || {};
+    if (!file || !note) {
+      checks.push({ ok: false, problem: `${label} needs both \`file\` and \`note\` - it will be skipped.` });
+      return;
+    }
+    if (mode && mode !== 'note' && mode !== 'document') {
+      checks.push({ ok: false, problem: `${label}.mode must be "note" or "document", got "${mode}".` });
+      return;
+    }
+    let resolved;
+    try {
+      resolved = resolveKnowledgeFile(file);
+    } catch (err) {
+      checks.push({ ok: false, problem: `${label}.file is not usable: ${err.message}` });
+      return;
+    }
+    if (mode === 'document' && (fs.existsSync(resolved) || createdHere.has(resolved))) {
+      const why = createdHere.has(resolved)
+        ? 'is already created by an earlier entry in this same list'
+        : 'already exists';
+      checks.push({
+        ok: false,
+        problem:
+          `${label}: mode "document" only creates new files, and ${file} ${why} - either use ` +
+          'mode "note" to append to it, or choose a filename that does not exist yet.',
+      });
+      return;
+    }
+    if (mode === 'document') createdHere.add(resolved);
+    checks.push({ ok: true });
+  });
+
+  return checks;
+}
+
 // { attempts, issuedUuid, maxAttempts? } -> a BetaRunnableTool for
 // client.beta.messages.toolRunner. maxAttempts defaults to config's, but
 // session.js's --max-attempts override must flow through here explicitly
 // (not read fresh from config) so the tool's own enforcement and the
 // message it shows the model both match whatever the outer loop is
 // actually enforcing.
-function createWriteEffectTool({ attempts, issuedUuid, maxAttempts = config.MAX_ATTEMPTS }) {
+function createWriteEffectTool({
+  attempts,
+  issuedUuid,
+  maxAttempts = config.MAX_ATTEMPTS,
+  maxKnowledgeUpdates = config.MAX_KNOWLEDGE_UPDATES,
+}) {
   return betaTool({
     name: 'write_effect',
     description:
       'Submit a complete VFX effect program (frontmatter + code) to be validated. ' +
       `You have ${maxAttempts} attempts total this session; validation errors are ` +
-      'returned so you can fix and retry. Optionally propose a knowledgeUpdate - it is ' +
+      'returned so you can fix and retry. Optionally propose knowledgeUpdates - they are ' +
       'committed only if THIS exact submission passes validation.\n\n' +
       'Whether it passes or fails, the result gives you the real measurements from the ' +
       'real runtime: whole-run liveliness metrics, the early-vs-late collapse ratios, the ' +
@@ -174,30 +244,54 @@ function createWriteEffectTool({ attempts, issuedUuid, maxAttempts = config.MAX_
           description:
             'The complete effect program source, including the /*@vfx ... @vfx*/ frontmatter block.',
         },
-        knowledgeUpdate: {
-          type: 'object',
+        knowledgeUpdates: {
+          type: 'array',
+          maxItems: maxKnowledgeUpdates,
           description:
-            'Optional: a lesson to append to the knowledge base. Only committed if this submission validates.',
-          properties: {
-            file: {
-              type: 'string',
-              description:
-                'Path relative to knowledge/, e.g. "artists/jim-campbell.md". Must be directly ' +
-                'under knowledge/artists/ or knowledge/craft/ (no nesting); a new filename creates ' +
-                'a new file (e.g. your own manifesto/notes).',
+            'Optional: knowledge-base writes to commit alongside this piece - lessons appended to ' +
+            'existing files, whole new files created, or both. They are committed together, and ' +
+            'ONLY if this submission validates, so put them on the submission you expect to pass; ' +
+            `stating an intention in your reasoning does not write anything. Up to ` +
+            `${maxKnowledgeUpdates} per session. A session that genuinely learned several things - ` +
+            'a craft technique worth a new cookbook, an attempt note under each dossier it argued ' +
+            'with, a manifesto - should write all of them here rather than picking one.',
+          items: {
+            type: 'object',
+            properties: {
+              file: {
+                type: 'string',
+                description:
+                  'Path relative to knowledge/, e.g. "artists/jim-campbell.md". Must be directly ' +
+                  'under knowledge/artists/ or knowledge/craft/ (no nesting, no "knowledge/" ' +
+                  'prefix); a new filename creates a new file (e.g. your own manifesto/notes).',
+              },
+              note: {
+                type: 'string',
+                description:
+                  'In mode "note", the note prose only - the host stamps the date and UUID, do ' +
+                  'not include them yourself. In mode "document", the ENTIRE file content, ' +
+                  'written verbatim: open with your own `# Heading`, structure it with `##` ' +
+                  'sections, and write it as the finished document a future session will read.',
+              },
+              mode: {
+                type: 'string',
+                enum: ['note', 'document'],
+                description:
+                  'How to write it. "note" (the default) appends one dated, UUID-stamped bullet ' +
+                  'to the file - right for attempt notes and lessons added to an existing dossier ' +
+                  'or cookbook. "document" writes `note` verbatim as a complete new file and is ' +
+                  'the ONLY way to author a real document, such as your manifesto under ' +
+                  'knowledge/naming.md; it creates a file that does not exist yet and will be ' +
+                  'rejected if one already does, so it can never overwrite a dossier.',
+              },
             },
-            note: {
-              type: 'string',
-              description:
-                'The note prose only - the host stamps the date and UUID, do not include them yourself.',
-            },
+            required: ['file', 'note'],
           },
-          required: ['file', 'note'],
         },
       },
       required: ['source'],
     },
-    run: async ({ source, knowledgeUpdate }) => {
+    run: async ({ source, knowledgeUpdates }) => {
       if (attempts.passed) {
         return 'Already validated successfully this session - do not call this tool again.';
       }
@@ -222,6 +316,15 @@ function createWriteEffectTool({ attempts, issuedUuid, maxAttempts = config.MAX_
       // a failed attempt is exactly when seeing the draft matters most.
       const sheetBlocks = contactSheetBlocks(report);
       const measurements = formatReportForModel(report);
+      const updates = Array.isArray(knowledgeUpdates) ? knowledgeUpdates : [];
+      const kuChecks = knowledgeUpdateChecks(updates);
+      const kuAccepted = updates
+        .filter((u, i) => kuChecks[i].ok)
+        .map((u) => `  - ${u.mode === 'document' ? 'create' : 'append to'} knowledge/${u.file}`);
+      const kuRejected = kuChecks.filter((c) => !c.ok).map((c) => `  - ${c.problem}`);
+      const kuNote = kuRejected.length
+        ? `\n\nKNOWLEDGE UPDATES THAT WILL BE REJECTED:\n${kuRejected.join('\n')}`
+        : '';
 
       if (!report.pass) {
         deleteIfExists(report.gifPath);
@@ -237,7 +340,7 @@ function createWriteEffectTool({ attempts, issuedUuid, maxAttempts = config.MAX_
           `FAILED validation (attempt ${attemptNumber}/${maxAttempts}, ` +
           `${remaining > 0 ? `${remaining} remaining` : 'no attempts remaining'}):\n${errorList}`;
         return [
-          { type: 'text', text: `${header}\n\n${measurements}\n\n${next}` },
+          { type: 'text', text: `${header}\n\n${measurements}${kuNote}\n\n${next}` },
           ...sheetBlocks,
         ];
       }
@@ -246,16 +349,23 @@ function createWriteEffectTool({ attempts, issuedUuid, maxAttempts = config.MAX_
       attempts.final = {
         source,
         frontmatter: report.frontmatter,
-        knowledgeUpdate: knowledgeUpdate || null,
+        knowledgeUpdates: updates,
         gifPath: report.gifPath,
         contactSheetPaths: report.contactSheetPaths,
       };
+      const kuStatus =
+        (kuAccepted.length ? `\n\nKnowledge updates accepted:\n${kuAccepted.join('\n')}` : '') +
+        kuNote +
+        (kuRejected.length
+          ? '\n\nThe piece still commits, and any accepted updates above still land; the rejected ' +
+            'ones do not. Say so in your closing message so the omission is on the record.'
+          : '');
       return [
         {
           type: 'text',
           text:
             `PASSED validation on attempt ${attemptNumber}/${maxAttempts}. This piece will be ` +
-            `committed to the library.\n\n${measurements}`,
+            `committed to the library.\n\n${measurements}${kuStatus}`,
         },
         ...sheetBlocks,
       ];
@@ -352,4 +462,70 @@ function createPreviewEffectTool({ previewBudget, issuedUuid, maxPreviewCalls = 
   });
 }
 
-module.exports = { createWriteEffectTool, createPreviewEffectTool };
+// { archiveReadBudget, maxArchiveReads? } -> a BetaRunnableTool for
+// client.beta.messages.toolRunner. The opening payload can only afford to
+// show the newest RECENT_PIECES_LIMIT pieces (and source for fewer still),
+// which leaves everything older present in the manifest but unreadable -
+// a problem naming.md makes concrete: its grounding rule demands the
+// manifesto cite pieces it can actually verify, and a session has no
+// memory of any run but its own. This tool closes that gap.
+function createReadArchivePieceTool({
+  archiveReadBudget,
+  maxArchiveReads = config.MAX_ARCHIVE_READS,
+}) {
+  return betaTool({
+    name: 'read_archive_piece',
+    description:
+      'Pull one past piece from the library by UUID - its frontmatter, rationale, lineage, full ' +
+      'source, and its epoch contact sheets - exactly as the recent pieces appear in the opening ' +
+      'archive. Use it for any piece the library manifest lists but does not show in full, and ' +
+      'whenever you need to see what an older piece actually IS rather than rely on its title: ' +
+      "grounding a manifesto claim or a name under knowledge/naming.md, citing lineage against a " +
+      'piece outside the recent slice, or checking whether the idea you are about to pursue is ' +
+      `one you already made. Capped at ${maxArchiveReads} calls this session; a failed lookup ` +
+      '(unknown UUID) does not count against that cap. Pieces already shown in full in the ' +
+      'opening archive do not need fetching.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        uuid: {
+          type: 'string',
+          description:
+            'The piece\'s UUID, exactly as it appears in the library manifest (frontmatter `id`).',
+        },
+      },
+      required: ['uuid'],
+    },
+    run: async ({ uuid }) => {
+      if (archiveReadBudget.count >= maxArchiveReads) {
+        return (
+          `Archive read budget (${maxArchiveReads}) already used up this session - do not call ` +
+          'read_archive_piece again. The library manifest still lists every piece by UUID and ' +
+          'title if you need to cite one.'
+        );
+      }
+
+      const { piece, error } = await loadPieceByUuid(uuid);
+      if (error) {
+        // Deliberately NOT charged against the budget: a failed lookup
+        // returns one line of text and costs nothing, and charging for a
+        // mistyped UUID would spend a slot the model never got value from.
+        // MAX_ITERATIONS still bounds any runaway retry loop from outside.
+        return `Could not read archive piece: ${error}`;
+      }
+
+      archiveReadBudget.count += 1;
+      const remaining = maxArchiveReads - archiveReadBudget.count;
+      const header =
+        `Archive piece ${archiveReadBudget.count}/${maxArchiveReads} ` +
+        `(${remaining} read(s) remaining), in full:`;
+
+      return [
+        { type: 'text', text: header },
+        ...pieceContentBlocks(piece, { includeSource: true }),
+      ];
+    },
+  });
+}
+
+module.exports = { createWriteEffectTool, createPreviewEffectTool, createReadArchivePieceTool };

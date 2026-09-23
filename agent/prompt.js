@@ -11,8 +11,7 @@ const fs = require('fs');
 const config = require('./config');
 const { VFX_API_PATH, PRELUDE_PATH } = config;
 const { readKnowledgeBaseText } = require('./knowledge');
-const { imageBlockFromGif } = require('./archive');
-const { EPOCHS } = require('../validate/epochs');
+const { pieceContentBlocks } = require('./archive');
 
 function readContractText() {
   const vfxApi = fs.readFileSync(VFX_API_PATH, 'utf8');
@@ -24,53 +23,34 @@ function readContractText() {
   );
 }
 
-// includeSource: full-source tier (the newest config.FULL_SOURCE_PIECES)
-// vs. catalogue tier. Both tiers keep frontmatter, rationale, lineage and
-// contact sheets - only the source text is dropped, since that is what
-// costs and what is only actually needed for the recent pieces a new one
-// is likely to build technique on.
-function pieceContentBlocks(piece, { includeSource }) {
-  const fm = piece.frontmatter;
-  const lineageText = Array.isArray(fm.lineage) && fm.lineage.length
-    ? fm.lineage.map((l) => `  - ${l.relation} of ${l.id}: ${l.note || ''}`).join('\n')
-    : '  (none)';
-  const influencesText = Array.isArray(fm.influences) && fm.influences.length
-    ? fm.influences.join(', ')
-    : '(none)';
-
-  const header =
-    `### "${fm.title || piece.relPath}" (${piece.uuid})\n` +
-    `Created: ${fm.created || 'unknown'}  Artist: ${fm.artist || 'unknown'}\n` +
-    `Influences: ${influencesText}\n` +
-    `Lineage:\n${lineageText}\n` +
-    `Rationale: ${fm.rationale || '(none)'}\n\n` +
-    (includeSource
-      ? `Source (${piece.relPath}):\n${piece.source}`
-      : `Source: not included this session (${piece.relPath}) - this piece is in the ` +
-        `catalogue tier, so you get its identity, rationale and contact sheets but not ` +
-        `its code. Nothing is wrong with it; only the most recent ` +
-        `${config.FULL_SOURCE_PIECES} pieces carry source, to keep the archive long ` +
-        `without it costing a fortune. You can still cite it in lineage.`);
-
-  const blocks = [{ type: 'text', text: header }];
-  piece.contactSheetPaths.forEach((sheetPath, i) => {
-    const epoch = EPOCHS[i];
-    if (sheetPath) {
-      blocks.push({
-        type: 'text',
-        text: `[t≈${epoch.label}: a 3x3 grid of frames ~0.7s apart, showing motion at this point in the run]`,
-      });
-      blocks.push(imageBlockFromGif(sheetPath));
-    } else {
-      blocks.push({
-        type: 'text',
-        text:
-          `[t≈${epoch.label}: not reached - this piece found a stable attractor, or the run hit ` +
-          `the validator's simulated-time cap, before this epoch]`,
-      });
-    }
+// The whole library as one compact table of contents - every piece, not
+// just the slice shown in full below it. Without this, a piece that falls
+// outside RECENT_PIECES_LIMIT is not merely abbreviated but INVISIBLE:
+// the session cannot cite it (naming.md's grounding rule wants UUID and
+// title), cannot judge the `contrast` lineage gate against it, and cannot
+// even know to ask for it by UUID. Deliberately text-only - no source, no
+// images - so it stays affordable as the archive grows.
+function formatManifest(manifest, shownUuids) {
+  const rows = manifest.map((m) => {
+    const lineage = m.lineage.length
+      ? m.lineage.map((l) => `${l.relation} of ${l.id}`).join('; ')
+      : 'none';
+    const influences = m.influences.length ? m.influences.join(', ') : 'none';
+    const availability = shownUuids.has(m.uuid)
+      ? 'full entry below'
+      : 'not shown below - read_archive_piece with this UUID for its source and images';
+    return (
+      `- "${m.title}" (${m.uuid})\n` +
+      `    ${m.created}, signed ${m.artist} [${availability}]\n` +
+      `    lineage: ${lineage}  |  influences: ${influences}`
+    );
   });
-  return blocks;
+  return (
+    `COMPLETE LIBRARY MANIFEST - every one of the ${manifest.length} piece(s) in the library, ` +
+    `newest first. This is the full list; the detailed entries that follow are only the most ` +
+    `recent few. Cite from this list by UUID and title, and judge naming.md's evidence gates ` +
+    `against it rather than against what happens to be shown in full.\n\n${rows.join('\n')}`
+  );
 }
 
 // archive: agent/archive.js's gatherArchive() output's `pieces` (the
@@ -79,8 +59,16 @@ function pieceContentBlocks(piece, { includeSource }) {
 // size, not just the slice - so the model can evaluate naming.md's
 // "library holds at least 12 pieces" gate even once the archive grows
 // past RECENT_PIECES_LIMIT and this slice stops being the whole story.
+// archiveManifest: that same call's `manifest` - one lightweight row per
+// piece in the whole library (see formatManifest).
 // issuedUuid: host-generated crypto.randomUUID() for the piece to be written.
-function buildPrompt({ archive, archiveTotalCount, issuedUuid, maxAttempts = config.MAX_ATTEMPTS }) {
+function buildPrompt({
+  archive,
+  archiveTotalCount,
+  archiveManifest = [],
+  issuedUuid,
+  maxAttempts = config.MAX_ATTEMPTS,
+}) {
   const system = [
     { type: 'text', text: readContractText(), cache_control: { type: 'ephemeral' } },
     { type: 'text', text: readKnowledgeBaseText(), cache_control: { type: 'ephemeral' } },
@@ -94,8 +82,9 @@ function buildPrompt({ archive, archiveTotalCount, issuedUuid, maxAttempts = con
       `recent first. The library holds ${archiveTotalCount} piece(s) in total; the ${archive.length} ` +
       `most recent are shown below` +
       (olderCount > 0
-        ? `, plus ${olderCount} older one(s) not shown here - naming.md's evidence gate counts ` +
-          `the library total, not just what's shown.`
+        ? `, plus ${olderCount} older one(s) listed in the manifest above but not detailed here - ` +
+          `call read_archive_piece with a UUID to pull any of them in full, source and images ` +
+          `included. naming.md's evidence gates count the library total, not just what's shown.`
         : ` (that's all of them).`) +
       ` The newest ` +
       `${Math.min(config.FULL_SOURCE_PIECES, archive.length)} include their full source; the ` +
@@ -109,6 +98,11 @@ function buildPrompt({ archive, archiveTotalCount, issuedUuid, maxAttempts = con
       `piece's epochs for whether it's still finding new configurations by its later ones, or ` +
       `has settled into repeating the same handful of shapes - see ` +
       `knowledge/craft/attractors.md for why that distinction matters.`,
+  };
+
+  const manifestBlock = {
+    type: 'text',
+    text: formatManifest(archiveManifest, new Set(archive.map((p) => p.uuid))),
   };
 
   const archiveBlocks = archive.flatMap((piece, i) =>
@@ -133,13 +127,18 @@ function buildPrompt({ archive, archiveTotalCount, issuedUuid, maxAttempts = con
       `time you choose - it costs nothing against your write_effect attempts. Prefer it over ` +
       `hand-simulating what the code would produce; check what a change actually looks like ` +
       `before spending an attempt on it.\n\n` +
+      `Use read_archive_piece to pull any piece in the manifest - including ones too old to be ` +
+      `shown in full - with its source and contact sheets. Reach for it whenever a claim you ` +
+      `are about to make depends on what an older piece actually is: drafting or ratifying a ` +
+      `name under naming.md's grounding rule, citing lineage against a piece you cannot see, ` +
+      `or checking whether you have already done the thing you are about to do again.\n\n` +
       `Web search and web fetch are available if you want to look into an influence before writing ` +
       `- optional, not required.`,
     cache_control: { type: 'ephemeral' },
   };
 
   const messages = [
-    { role: 'user', content: [archiveIntro, ...archiveBlocks, instruction] },
+    { role: 'user', content: [manifestBlock, archiveIntro, ...archiveBlocks, instruction] },
   ];
 
   return { system, messages };

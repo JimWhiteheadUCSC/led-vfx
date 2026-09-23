@@ -112,4 +112,50 @@ function appendKnowledgeNote({ file, note, uuid, date }) {
   return resolved;
 }
 
-module.exports = { readKnowledgeBaseText, appendKnowledgeNote, resolveKnowledgeFile };
+// Writes `content` verbatim as a whole new knowledge file. The note path
+// above exists for evidence - a dated, UUID-stamped bullet appended to a
+// dossier - and stamping the same prefix onto a document would make the
+// agent's own manifesto a bullet point of a file that has no list. So a
+// document is written as written, with provenance moved to a footer
+// instead of a prefix.
+//
+// CREATE-ONLY, deliberately. Verbatim content plus overwrite would let
+// one session flatten a curated dossier (or its own earlier manifesto)
+// with no way back, and nothing here is version-controlled by the agent.
+// Revising an existing document is therefore the note path's job -
+// appending to it - or the owner's, by hand.
+//
+// The footer's date matters beyond bookkeeping: naming.md asks a draft to
+// record when it was made so the ratifying session can count the pieces
+// since, and the host is the only party here that reliably knows today's
+// date.
+function writeKnowledgeDocument({ file, content, uuid, date }) {
+  const resolved = resolveKnowledgeFile(file);
+  if (fs.existsSync(resolved)) {
+    throw new Error(
+      `knowledgeUpdate mode "document" only ever creates a new file, and ${file} already ` +
+        'exists - use mode "note" to add to a file that is already there'
+    );
+  }
+  if (typeof content !== 'string' || !content.trim()) {
+    throw new Error('knowledgeUpdate.note must be non-empty prose to write as a document');
+  }
+  fs.mkdirSync(path.dirname(resolved), { recursive: true });
+  const footer = `\n\n---\n\n*Written ${date}, in the session that produced ${uuid}.*\n`;
+  fs.writeFileSync(resolved, `${content.replace(/\s+$/, '')}${footer}`);
+  return resolved;
+}
+
+// The one entry point agent/library.js commits a knowledgeUpdate through:
+// 'note' (the default) appends dated evidence to a dossier, 'document'
+// creates a whole new file. Throws on anything invalid - the caller
+// treats that as a rejected update, not a session-ending error.
+function applyKnowledgeUpdate({ file, note, mode = 'note', uuid, date }) {
+  if (mode === 'document') return writeKnowledgeDocument({ file, content: note, uuid, date });
+  if (mode !== 'note') {
+    throw new Error(`knowledgeUpdate.mode must be "note" or "document", got "${mode}"`);
+  }
+  return appendKnowledgeNote({ file, note, uuid, date });
+}
+
+module.exports = { readKnowledgeBaseText, applyKnowledgeUpdate, resolveKnowledgeFile };

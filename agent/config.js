@@ -39,6 +39,21 @@ module.exports = {
   // write_effect attempt budget - it has its own cap purely to bound the
   // extra sandbox spin-up + render + image-token cost per session.
   MAX_PREVIEW_CALLS: 8,
+  // read_archive_piece: how many past pieces one session may pull in full
+  // (source + contact sheet images) beyond the recent slice the opening
+  // payload already carries. Set generously on purpose - the artist
+  // having real access to its own body of work matters more than the
+  // token cost, and naming/ratification sessions legitimately need to
+  // read widely. Revisit only if sessions turn out to fetch habitually
+  // rather than when they actually need to see something.
+  MAX_ARCHIVE_READS: 10,
+  // How many knowledge-base writes one passing submission may carry. More
+  // than one because a session that reflects across the whole archive can
+  // legitimately learn several separable things - a craft technique worth
+  // its own cookbook, an attempt note under each dossier it argued with,
+  // and (once naming.md's gate opens) a manifesto - and forcing it to pick
+  // one means the rest are lost with the session.
+  MAX_KNOWLEDGE_UPDATES: 8,
   MAX_ITERATIONS: 16, // outer safety net - generous headroom over MAX_ATTEMPTS for research turns
   WEB_TOOL_MAX_USES: 5,
   // The archive is tiered: every piece contributes its frontmatter,

@@ -22,7 +22,11 @@ const crypto = require('crypto');
 const config = require('./config');
 const { gatherArchive } = require('./archive');
 const { buildPrompt } = require('./prompt');
-const { createWriteEffectTool, createPreviewEffectTool } = require('./tool');
+const {
+  createWriteEffectTool,
+  createPreviewEffectTool,
+  createReadArchivePieceTool,
+} = require('./tool');
 const { commitNewPiece, writeFailedSessionLog } = require('./library');
 
 function parseArgs(argv) {
@@ -71,11 +75,24 @@ async function main() {
   const { dryRun, model, maxAttempts } = parseArgs(process.argv);
 
   console.log('[agent] gathering archive...');
-  const { pieces: archive, totalCount: archiveTotalCount } = await gatherArchive();
-  console.log(`[agent] archive: ${archive.length} of ${archiveTotalCount} piece(s) shown`);
+  const {
+    pieces: archive,
+    totalCount: archiveTotalCount,
+    manifest: archiveManifest,
+  } = await gatherArchive();
+  console.log(
+    `[agent] archive: ${archive.length} of ${archiveTotalCount} piece(s) shown in full, ` +
+      `all ${archiveManifest.length} in the manifest`
+  );
 
   const issuedUuid = crypto.randomUUID();
-  const { system, messages } = buildPrompt({ archive, archiveTotalCount, issuedUuid, maxAttempts });
+  const { system, messages } = buildPrompt({
+    archive,
+    archiveTotalCount,
+    archiveManifest,
+    issuedUuid,
+    maxAttempts,
+  });
 
   if (dryRun) {
     console.log('[agent] --dry-run: assembled payload (no API call)');
@@ -99,6 +116,8 @@ async function main() {
   const writeEffectTool = createWriteEffectTool({ attempts, issuedUuid, maxAttempts });
   const previewBudget = { count: 0 };
   const previewEffectTool = createPreviewEffectTool({ previewBudget, issuedUuid });
+  const archiveReadBudget = { count: 0 };
+  const readArchivePieceTool = createReadArchivePieceTool({ archiveReadBudget });
 
   console.log(`[agent] starting session (model=${model}, max attempts=${maxAttempts})`);
 
@@ -112,6 +131,7 @@ async function main() {
     tools: [
       writeEffectTool,
       previewEffectTool,
+      readArchivePieceTool,
       { type: 'web_search_20260318', name: 'web_search', max_uses: config.WEB_TOOL_MAX_USES },
       { type: 'web_fetch_20260318', name: 'web_fetch', max_uses: config.WEB_TOOL_MAX_USES },
     ],
@@ -149,21 +169,29 @@ async function main() {
   }
 
   if (attempts.passed && attempts.final) {
-    const { source, frontmatter, knowledgeUpdate, gifPath, contactSheetPaths } = attempts.final;
+    const { source, frontmatter, knowledgeUpdates, gifPath, contactSheetPaths } = attempts.final;
     const result = commitNewPiece({
       uuid: issuedUuid,
       title: frontmatter.title,
       source,
-      knowledgeUpdate,
+      knowledgeUpdates,
       previewGifPath: gifPath,
       previewContactSheetPaths: contactSheetPaths,
       thinkingLog,
     });
     console.log(`[agent] committed: ${result.relPath}`);
-    if (result.knowledgePath) console.log(`[agent] knowledge update: ${result.knowledgePath}`);
-    if (result.knowledgeError) {
+    const written = result.knowledgeResults.filter((r) => r.path);
+    const rejected = result.knowledgeResults.filter((r) => r.error);
+    if (!result.knowledgeResults.length) {
+      console.log('[agent] no knowledge updates submitted this session');
+    }
+    for (const r of written) {
+      console.log(`[agent] knowledge update (${r.mode}): ${r.path}`);
+    }
+    for (const r of rejected) {
       console.error(
-        `[agent] knowledge update REJECTED (piece still committed above): ${result.knowledgeError}`
+        `[agent] knowledge update REJECTED for knowledge/${r.file} ` +
+          `(piece still committed above): ${r.error}`
       );
     }
     if (result.thinkingPath) console.log(`[agent] thinking log: ${result.thinkingPath}`);

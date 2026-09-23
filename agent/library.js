@@ -9,7 +9,7 @@
 const fs = require('fs');
 const path = require('path');
 const { EFFECTS_DIR, FAILED_SESSIONS_DIR, INDEX_PATH, PLAYLIST_PATH } = require('./config');
-const { appendKnowledgeNote } = require('./knowledge');
+const { applyKnowledgeUpdate } = require('./knowledge');
 const { contactSheetPathsFor } = require('./archive');
 
 const DIACRITIC_MARKS_RE = /[̀-ͯ]/g;
@@ -141,18 +141,19 @@ function writeFailedSessionLog({ uuid, attempts, thinkingLog }) {
   return logPath;
 }
 
-// { uuid, title, source, knowledgeUpdate?, previewGifPath?, previewContactSheetPaths?, thinkingLog? }
+// { uuid, title, source, knowledgeUpdates?, previewGifPath?, previewContactSheetPaths?, thinkingLog? }
 // -> writes the effect, updates index.json + playlist.json, renames any
 // preview artifacts from the validating attempt's scratch name to the
-// final one, writes the full thinking log (if given) beside it, and (if
-// given) delegates the knowledge-base note. Only ever called after
-// validateProgram() has returned pass:true for this exact source - see
-// agent/tool.js.
+// final one, writes the full thinking log (if given) beside it, and
+// delegates each knowledge-base write. Returns knowledgeResults: one
+// { file, mode, path } or { file, mode, error } per attempted write.
+// Only ever called after validateProgram() has returned pass:true for
+// this exact source - see agent/tool.js.
 function commitNewPiece({
   uuid,
   title,
   source,
-  knowledgeUpdate,
+  knowledgeUpdates,
   previewGifPath,
   previewContactSheetPaths,
   thinkingLog,
@@ -179,27 +180,25 @@ function commitNewPiece({
   playlist.push({ file: basename });
   atomicWriteFileSync(PLAYLIST_PATH, serializePlaylist(playlist));
 
-  let knowledgePath = null;
-  let knowledgeError = null;
-  if (knowledgeUpdate && knowledgeUpdate.file && knowledgeUpdate.note) {
-    // The piece above is already committed by this point - a malformed
-    // knowledgeUpdate.file (e.g. the model echoing a "knowledge/" prefix
-    // resolveKnowledgeFile() doesn't want) must not crash the whole
-    // session and masquerade as a failed run when the actual artwork
-    // landed fine. Report it instead of throwing.
-    try {
-      knowledgePath = appendKnowledgeNote({
-        file: knowledgeUpdate.file,
-        note: knowledgeUpdate.note,
-        uuid,
-        date: new Date().toISOString().slice(0, 10),
-      });
-    } catch (err) {
-      knowledgeError = err.message;
-    }
-  }
+  // The piece above is already committed by this point - a malformed
+  // entry (e.g. the model echoing a "knowledge/" prefix
+  // resolveKnowledgeFile() doesn't want) must not crash the whole session
+  // and masquerade as a failed run when the actual artwork landed fine.
+  // Each entry is applied independently, in order, so one bad path costs
+  // only itself: a session that writes a manifesto and three notes should
+  // not lose the manifesto to a typo in the fourth.
+  const date = new Date().toISOString().slice(0, 10);
+  const knowledgeResults = (knowledgeUpdates || [])
+    .filter((u) => u && u.file && u.note)
+    .map((u) => {
+      try {
+        return { file: u.file, mode: u.mode || 'note', path: applyKnowledgeUpdate({ ...u, uuid, date }) };
+      } catch (err) {
+        return { file: u.file, mode: u.mode || 'note', error: err.message };
+      }
+    });
 
-  return { effectPath, relPath, knowledgePath, knowledgeError, thinkingPath };
+  return { effectPath, relPath, knowledgeResults, thinkingPath };
 }
 
 module.exports = { slugify, resolveCollisionFreePath, commitNewPiece, writeFailedSessionLog };
