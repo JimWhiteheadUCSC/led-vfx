@@ -30,7 +30,7 @@ loadEnvFile(path.join(__dirname, '..', '.env'));
 const REPO_ROOT = path.join(__dirname, '..');
 
 module.exports = {
-  MODEL_ID: process.env.AGENT_MODEL || 'claude-opus-5',
+  MODEL_ID: process.env.AGENT_MODEL || 'claude-opus-5-5',
   EFFORT: 'high',
   MAX_TOKENS: 64000,
   MAX_ATTEMPTS: 5,
